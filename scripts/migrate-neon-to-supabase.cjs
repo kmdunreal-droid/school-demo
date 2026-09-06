@@ -34,7 +34,14 @@ const SB_KEY = process.env.SUPABASE_SECRET_KEY;
       },
       body: JSON.stringify(chunk),
     });
-    if (!res.ok) { console.error('upsert FAIL', res.status, (await res.text()).slice(0, 300)); process.exit(1); }
+    if (!res.ok) {
+      const errText = (await res.text()).slice(0, 300);
+      console.error('upsert FAIL', res.status, errText);
+      if (errText.includes('PGRST205') || res.status === 404) {
+        console.error('\nPlease run scripts/supabase-schema.sql in the Supabase SQL Editor first, then retry.');
+      }
+      process.exit(1);
+    }
     total += chunk.length;
     console.log('upserted', total, '/', rows.length);
   }

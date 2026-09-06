@@ -1,6 +1,6 @@
 import { testSupabaseConnection } from '../supabase';
 import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
-import { sanitizeForFirestore, listChanged } from '../lib/firestoreUtils';
+import { listChanged } from '../lib/dataUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -1944,7 +1944,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           const ctx = canvas.getContext('2d');
           if (!ctx) return reject('Failed to get canvas context');
 
-          // Balanced size to save Firestore bandwidth while maintaining clarity
+          // Balanced size to save sync bandwidth while maintaining clarity
           const maxWidth = 400;
           const scale = Math.min(1, maxWidth / img.width);
           canvas.width = img.width * scale;
@@ -6273,7 +6273,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         {activeTab === 'settings' && (
           <div id="panel-principal-settings" className="space-y-8 animate-fade-in font-sans bg-slate-50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 shadow-inner">
             
-            {/* ========== MANUAL FIREBASE DATA SYNC ========== */}
+            {/* ========== MANUAL CLOUD DATA SYNC ========== */}
             <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-6 my-6">
               <div className="flex items-center gap-4">
                 <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-600">

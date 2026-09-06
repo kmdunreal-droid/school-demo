@@ -232,15 +232,15 @@ npm run dev       # Dev server (port 3000/3001)
 npm run build     # Production build → dist/
 npm run preview   # Preview production build
 npm run lint      # TypeScript check (tsc --noEmit)
-npx tsx seed-firestore.ts  # One-time Firestore seeding
+node scripts/migrate-neon-to-supabase.cjs  # One-time Neon → Supabase data migration
 ```
 
-### Firebase Setup Checklist
-- [ ] Firestore Database created (Native mode)
-- [ ] Security Rules: Test mode (`allow read, write: if true;`)
-- [ ] Authentication → Email/Password enabled
-- [ ] Project ID matches `firebase-applet-config.json`
-- [ ] Named database ID matches (or use `(default)`)
+### Supabase Setup Checklist
+- [ ] Supabase project created (free tier — koi write-quota nahi)
+- [ ] `scripts/supabase-schema.sql` Supabase SQL Editor mein run kiya (`records` table + RLS + realtime)
+- [ ] `.env`: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` (browser), `SUPABASE_SECRET_KEY` (scripts-only, kabhi bundle nahi)
+- [ ] Realtime enabled on `records` table (schema.sql karta hai)
+- [ ] Data migrated: `node scripts/migrate-neon-to-supabase.cjs`
 
 ### PWA Installation
 - Runs on HTTPS or localhost
@@ -253,11 +253,11 @@ npx tsx seed-firestore.ts  # One-time Firestore seeding
 ## Known Limitations & TODOs
 
 ### High Priority
-- [ ] Add Firebase Security Rules for production
-- [ ] Implement proper auth (Firebase Auth + custom claims for roles)
-- [ ] Add data validation/sanitization on write
+- [ ] Tighten RLS policies (abhi `records_public` all-access hai — current public-app behavior)
+- [ ] Implement proper auth (Supabase Auth + role-based policies for teachers/students)
+- [ ] Add data validation on write (Postgres CHECK constraints / zod)
 - [ ] Implement conflict resolution for concurrent edits
-- [ ] Add audit log collection for all changes
+- [ ] Add audit log table for all changes
 
 ### Medium Priority
 - [ ] Extract duplicate code (see table above)
@@ -282,10 +282,10 @@ npx tsx seed-firestore.ts  # One-time Firestore seeding
 | Add new fee type | `types.ts`, `feeEngine.ts`, `PrincipalDashboard.tsx` |
 | Modify WhatsApp template | `App.tsx` (appSettings default), `PrincipalDashboard.tsx` (settings tab) |
 | Add new role | `types.ts` (Role), `Login.tsx`, `App.tsx` (routing), dashboards |
-| Change sync interval | `App.tsx` (30s pull, 60s push) |
+| Change sync behavior | `lib/supabaseSync.ts` (batch/debounce), `App.tsx` (realtime subscription) |
 | Modify attendance statuses | `types.ts` (Attendance.status), dashboards |
 | Add new notification type | `lib/notificationUtils.ts`, `types.ts` |
-| Seed more initial data | `initialData.ts`, `seed-firestore.ts` |
+| Seed more initial data | `initialData.ts`, `scripts/migrate-neon-to-supabase.cjs` |
 
 ---
 
@@ -302,14 +302,17 @@ pushLocalToCloud();
 // View localStorage keys
 Object.keys(localStorage).filter(k => k.startsWith('acadamis'));
 
-// Test Firebase connection
-testFirebaseConnection().then(console.log);
+// Test Supabase connection
+import { testSupabaseConnection } from './src/supabase';
+testSupabaseConnection().then(console.log);
 ```
 
 ### Common Issues
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Data not on other device | Initial sync failed, push not running | Click "Force Sync to Cloud" or wait 60s |
+| Data not on other device | Supabase realtime disconnected | Refresh page; check `records` table realtime enabled |
+| `PGRST205` / 404 on writes | `records` table missing | Run `scripts/supabase-schema.sql` in SQL Editor |
+| Migration script fails | Missing `.env` keys | Set `VITE_SUPABASE_URL` + `SUPABASE_SECRET_KEY` |
 | Fee shows wrong months | enrollmentMonth not set | Edit student → set enrollmentMonth |
 | WhatsApp not opening | Phone format / popup blocked | Check parentPhone, allow popups |
 | Build fails | TypeScript errors | Run `npm run lint` for details |

@@ -20,7 +20,6 @@ import TeacherDashboard from './components/TeacherDashboard';
 import StudentDashboard from './components/StudentDashboard';
 
 import { safeStorage } from './lib/safeStorage';
-import { sanitizeForFirestore } from './lib/firestoreUtils';
 
 
 function safeParse<T>(key: string, fallback: T): T {
@@ -580,8 +579,6 @@ export default function App() {
   }, [assignments]);
 
   // --- UTILS ---
-  // sanitizeForFirestore is imported from './lib/firestoreUtils' — it removes
-  // 'undefined' values, which Firestore rejects in documents.
 
   // Classes Sync
   useEffect(() => {

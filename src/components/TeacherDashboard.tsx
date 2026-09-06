@@ -10,7 +10,7 @@ import { getNotifications, addNotification, saveNotifications, PortalNotificatio
 import { getPeriodStatus, getStatusColor } from '../lib/periodUtils';
 import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, ExamType, UserSession, FeeRecord, DayOfWeek, Assignment, getStudentPhoto } from '../types';
 import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
-import { listChanged } from '../lib/firestoreUtils';
+import { listChanged } from '../lib/dataUtils';
 
 interface TeacherDashboardProps {
   userSession: UserSession;

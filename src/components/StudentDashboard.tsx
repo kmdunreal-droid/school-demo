@@ -1,5 +1,5 @@
 import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, flushSupabase } from '../lib/supabaseSync';
-import { listChanged } from '../lib/firestoreUtils';
+import { listChanged } from '../lib/dataUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
