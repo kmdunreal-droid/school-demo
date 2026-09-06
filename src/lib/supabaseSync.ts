@@ -1,18 +1,18 @@
 /**
- * SUPABASE SYNC LAYER — same `records` table ke saath:
+ * SUPABASE SYNC LAYER — Firestore-style per-table backend:
  *
- *   records (
- *     collection_name text,
- *     record_id       text,
- *     data            jsonb,
- *     updated_at      timestamptz default now(),
- *     primary key (collection_name, record_id)
- *   )
+ * Har collection ki apni table hai (id text pk, data jsonb, updated_at):
+ *   students, teachers, classes, timetable, attendance, marks,
+ *   fees, fee_data, coordinators, assignments, app_settings
  *
- * Yeh Neon ke `records` table jaisa hi hai — is liye Neon ki data seedhi
- * Supabase mein migrate ho sakti hai (scripts/migrate-neon-to-supabase.cjs).
+ * - sbQueueWrite('students', id, data)  → students table upsert
+ * - loadCollectionFromSupabase('fees')  → fees table select
+ * - subscribeRecords()                  → SARI tables par ek realtime channel
  *
- * Cross-device sync NOW WebSocket realtime (postgres_changes) se hota hai —
+ * Data Neon/Firestore se migrate karne ke liye:
+ * scripts/migrate-neon-to-supabase.cjs (records + sari tables dono fill karta hai)
+ *
+ * Cross-device sync WebSocket realtime (postgres_changes) se hota hai —
  * koi polling/heartbeat/quota nahi.
  */
 import { supabase } from '../supabase';
@@ -22,6 +22,12 @@ let supabaseHealthy = true;
 let supabaseLastError: string | null = null;
 export const isSupabaseHealthy = () => supabaseHealthy;
 export const getSupabaseLastError = () => supabaseLastError;
+
+/** App ki sari collections — har ek ki apni Supabase table hai. */
+export const KNOWN_TABLES = [
+  'students', 'teachers', 'classes', 'timetable', 'attendance',
+  'marks', 'fees', 'fee_data', 'coordinators', 'assignments', 'app_settings',
+] as const;
 
 // --- Queued writes (batched upsert on conflict) ---
 const pendingSet: { col: string; id: string; data: any }[] = [];
@@ -52,25 +58,32 @@ export async function flushSupabase(): Promise<boolean> {
   const sets = pendingSet.splice(0);
   const dels = pendingDel.splice(0);
   try {
-    // Upserts — chunks (body size safe)
-    for (let i = 0; i < sets.length; i += 100) {
-      const chunk = sets.slice(i, i + 100);
-      const body = chunk.map(({ col, id, data }) => ({
-        collection_name: col,
-        record_id: String(id),
-        data: data === undefined ? null : data,
-      }));
-      const { error } = await supabase
-        .from('records')
-        .upsert(body, { onConflict: 'collection_name,record_id' });
-      if (error) throw error;
+    // Upserts — per-table groups (har collection ki apni table, onConflict: id)
+    const byTable: Record<string, { id: string; data: any }[]> = {};
+    for (const { col, id, data } of sets) {
+      if (!byTable[col]) byTable[col] = [];
+      byTable[col].push({ id: String(id), data: data === undefined ? null : data });
     }
-    for (const d of dels) {
+    for (const [table, rows] of Object.entries(byTable)) {
+      for (let i = 0; i < rows.length; i += 100) {
+        const chunk = rows.slice(i, i + 100);
+        const { error } = await supabase
+          .from(table)
+          .upsert(chunk, { onConflict: 'id' });
+        if (error) throw error;
+      }
+    }
+    // Deletes — per-table batched (ek request mein saari ids)
+    const delsByTable: Record<string, string[]> = {};
+    for (const { col, id } of dels) {
+      if (!delsByTable[col]) delsByTable[col] = [];
+      delsByTable[col].push(String(id));
+    }
+    for (const [table, ids] of Object.entries(delsByTable)) {
       const { error } = await supabase
-        .from('records')
+        .from(table)
         .delete()
-        .eq('collection_name', d.col)
-        .eq('record_id', String(d.id));
+        .in('id', ids);
       if (error) throw error;
     }
     supabaseHealthy = true;
@@ -96,20 +109,28 @@ if (typeof window !== 'undefined') {
   });
 }
 
-/** Poora records table load karke collection_name ke hisaab se group karta hai. */
+/** Sari known tables load karke collection ke hisaab se group karta hai (App ka init path). */
 export async function loadAllFromSupabase(): Promise<Record<string, any[]>> {
   try {
-    const { data, error } = await supabase.from('records').select('*').order('record_id');
-    if (error) throw error;
     const out: Record<string, any[]> = {};
-    (data || []).forEach((r: any) => {
-      if (!out[r.collection_name]) out[r.collection_name] = [];
-      let rowData = r.data;
-      if (typeof rowData === 'string') { try { rowData = JSON.parse(rowData); } catch { rowData = {}; } }
-      rowData = rowData || {};
-      const item = { ...rowData, id: rowData.id !== undefined ? rowData.id : r.record_id };
-      out[r.collection_name].push(item);
-    });
+    await Promise.all(KNOWN_TABLES.map(async (table) => {
+      const { data, error } = await supabase.from(table).select('id,data');
+      if (error) {
+        if ((error as any)?.code === 'PGRST205') {
+          console.warn(`[Supabase] table "${table}" missing — SQL Editor mein scripts/supabase-schema.sql chalayein.`);
+        } else {
+          console.warn(`[Supabase] load "${table}" failed:`, (error as any).message);
+        }
+        out[table] = [];
+        return;
+      }
+      out[table] = (data || []).map((r: any) => {
+        let rowData = r.data;
+        if (typeof rowData === 'string') { try { rowData = JSON.parse(rowData); } catch { rowData = {}; } }
+        rowData = rowData || {};
+        return { ...rowData, id: rowData.id !== undefined ? rowData.id : r.id };
+      });
+    }));
     supabaseHealthy = true;
     return out;
   } catch (e: any) {
@@ -120,19 +141,18 @@ export async function loadAllFromSupabase(): Promise<Record<string, any[]>> {
   }
 }
 
-/** Kisi ek collection ka data load karo (null agar fail/khali). */
+/** Kisi ek collection (= apni table) ka data load karo (null agar fail). */
 export async function loadCollectionFromSupabase(col: string): Promise<any[] | null> {
   try {
     const { data, error } = await supabase
-      .from('records')
-      .select('*')
-      .eq('collection_name', col);
+      .from(col)
+      .select('id,data');
     if (error) throw error;
     return (data || []).map((r: any) => {
       let rowData = r.data;
       if (typeof rowData === 'string') { try { rowData = JSON.parse(rowData); } catch { rowData = {}; } }
       rowData = rowData || {};
-      return { ...rowData, id: rowData.id !== undefined ? rowData.id : r.record_id } as any;
+      return { ...rowData, id: rowData.id !== undefined ? rowData.id : r.id } as any;
     });
   } catch (e: any) {
     supabaseHealthy = false;
@@ -143,21 +163,24 @@ export async function loadCollectionFromSupabase(col: string): Promise<any[] | n
 }
 
 /**
- * ONE realtime channel — `records` table par koi bhi INSERT/UPDATE/DELETE
+ * ONE realtime channel — SARI tables par koi bhi INSERT/UPDATE/DELETE
  * sab connected devices ko push hota hai (WebSocket). Firebase ki 20s polling
  * / heartbeat ka koi sahara nahi chahiye.
  */
 export function subscribeRecords(onEvent: (payload: any) => void): () => void {
-  const channel: RealtimeChannel = supabase
-    .channel('nsb1-records')
-    .on(
+  const channel: RealtimeChannel = supabase.channel('nsb1-school');
+  for (const table of KNOWN_TABLES) {
+    channel.on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: 'records' },
-      (payload) => { try { onEvent(payload); } catch (e) { console.warn('[Supabase] realtime handler error:', e); } }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') console.log('[Sync:RT] Supabase realtime channel subscribed');
-      else if (status === 'CHANNEL_ERROR') console.warn('[Sync:RT] Supabase realtime channel error');
-    });
+      { event: '*', schema: 'public', table } as any,
+      (payload: any) => {
+        try { onEvent({ ...payload, table }); } catch (e) { console.warn('[Supabase] realtime handler error:', e); }
+      }
+    );
+  }
+  channel.subscribe((status) => {
+    if (status === 'SUBSCRIBED') console.log('[Sync:RT] Supabase realtime channel subscribed (all tables)');
+    else if (status === 'CHANNEL_ERROR') console.warn('[Sync:RT] Supabase realtime channel error');
+  });
   return () => { supabase.removeChannel(channel).catch(() => {}); };
 }

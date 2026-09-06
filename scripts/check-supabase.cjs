@@ -21,12 +21,12 @@ const sec = process.env.SUPABASE_SECRET_KEY;
     } catch { console.log(t.slice(0, 300)); }
   } catch (e) { console.log('postgrest root ERR:', e.message); }
 
-  // 2) Try reading `records` table with both keys
+  // 2) Try reading per-collection tables with both keys
   for (const [label, key] of [['publishable', pub], ['secret', sec]]) {
     try {
-      const r = await fetch(url + '/rest/v1/records?select=collection_name,record_id&limit=3', { headers: { apikey: key, Authorization: 'Bearer ' + key } });
-      console.log('records read [' + label + ']:', r.status, (await r.text()).slice(0, 160));
-    } catch (e) { console.log('records [' + label + '] ERR:', e.message); }
+      const r = await fetch(url + '/rest/v1/students?select=id&limit=3', { headers: { apikey: key, Authorization: 'Bearer ' + key } });
+      console.log('students read [' + label + ']:', r.status, (await r.text()).slice(0, 160));
+    } catch (e) { console.log('students [' + label + '] ERR:', e.message); }
   }
 
   // 3) Auth admin endpoint (secret key only)

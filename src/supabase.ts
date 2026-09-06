@@ -32,10 +32,10 @@ export async function testSupabaseConnection(): Promise<boolean> {
     return false;
   }
   try {
-    const { data, error } = await supabase.from('records').select('collection_name').limit(1);
+    const { data, error } = await supabase.from('students').select('id').limit(1);
     if (error) {
       if ((error as any)?.code === 'PGRST205') {
-        console.warn('[Supabase] `records` table missing — SQL Editor mein scripts/supabase-schema.sql chalayein.');
+        console.warn('[Supabase] tables missing — SQL Editor mein scripts/supabase-schema.sql chalayein.');
       }
       throw error;
     }
