@@ -167,8 +167,11 @@ export async function loadCollectionFromSupabase(col: string): Promise<any[] | n
  * sab connected devices ko push hota hai (WebSocket). Firebase ki 20s polling
  * / heartbeat ka koi sahara nahi chahiye.
  */
+let channelSeq = 0;
 export function subscribeRecords(onEvent: (payload: any) => void): () => void {
-  const channel: RealtimeChannel = supabase.channel('nsb1-school');
+  // Har call ka APNA channel — same naam par supabase-js channel reuse karta hai
+  // aur pehli subscribe ke baad naye .on() callbacks par throw karta hai.
+  const channel: RealtimeChannel = supabase.channel(`nsb1-school-${++channelSeq}`);
   for (const table of KNOWN_TABLES) {
     channel.on(
       'postgres_changes',
