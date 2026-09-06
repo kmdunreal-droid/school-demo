@@ -1,6 +1,5 @@
-import { db } from '../firebase';
-import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { testFirebaseConnection } from '../firebase';
+import { testSupabaseConnection } from '../supabase';
+import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
 import { sanitizeForFirestore, listChanged } from '../lib/firestoreUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -292,93 +291,68 @@ export default function PrincipalDashboard({
   useEffect(() => { attendanceRef.current = attendance; }, [attendance]);
   useEffect(() => { timetableRef.current = timetable; }, [timetable]);
 
-  // Real-time Firebase listeners for cross-portal sync
+  // Real-time Supabase listener — WebSocket push; doosri devices ki changes turant apply
   useEffect(() => {
-    // Listen for class changes (teacher reassignment)
-    const classesUnsubscribe = onSnapshot(collection(db, 'classes'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return; // skip echoes of our own pending writes
-      const updatedClasses: Class[] = [];
-      snapshot.forEach(d => {
-        updatedClasses.push({ id: d.id, ...d.data() } as Class);
-      });
-      // Deep per-item compare (catches same-length edits that length checks missed)
-      if (!listChanged(classesRef.current, updatedClasses)) return;
-      classesRef.current = updatedClasses;
-      setClasses(updatedClasses);
-      toast.info('Class assignments updated from Principal portal');
-    });
-
-    // Listen for teacher changes
-    const teachersUnsubscribe = onSnapshot(collection(db, 'teachers'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedTeachers: Teacher[] = [];
-      snapshot.forEach(d => {
-        updatedTeachers.push({ id: d.id, ...d.data() } as Teacher);
-      });
-      if (!listChanged(teachersRef.current, updatedTeachers)) return;
-      teachersRef.current = updatedTeachers;
-      setTeachers(updatedTeachers);
-      toast.info('Teacher list updated from Principal portal');
-    });
-
-    // Listen for student changes
-    const studentsUnsubscribe = onSnapshot(collection(db, 'students'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedStudents: Student[] = [];
-      snapshot.forEach(d => {
-        updatedStudents.push({ id: d.id, ...d.data() } as Student);
-      });
-      if (!listChanged(studentsRef.current, updatedStudents)) return;
-      studentsRef.current = updatedStudents;
-      setStudents(updatedStudents);
-      toast.info('Student list updated from Principal portal');
-    });
-
-    // Listen for fee data changes
-    const feeDataUnsubscribe = onSnapshot(collection(db, 'fee_data'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedFeeStudents: StudentFeeData[] = [];
-      snapshot.forEach(d => {
-        updatedFeeStudents.push({ id: d.id, ...d.data() } as StudentFeeData);
-      });
-      if (!listChanged(feeStudentsRef.current, updatedFeeStudents)) return;
-      feeStudentsRef.current = updatedFeeStudents;
-      setFeeStudents(updatedFeeStudents);
-    });
-
-    // Listen for attendance changes
-    const attendanceUnsubscribe = onSnapshot(query(collection(db, 'attendance'), orderBy('date', 'desc')), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedAttendance: Attendance[] = [];
-      snapshot.forEach(d => {
-        updatedAttendance.push({ id: d.id, ...d.data() } as Attendance);
-      });
-      if (!listChanged(attendanceRef.current, updatedAttendance)) return;
-      attendanceRef.current = updatedAttendance;
-      setAttendance(updatedAttendance);
-    });
-
-    // Listen for timetable changes
-    const timetableUnsubscribe = onSnapshot(collection(db, 'timetable'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedTimetable: TimetableEntry[] = [];
-      snapshot.forEach(d => {
-        updatedTimetable.push({ id: d.id, ...d.data() } as TimetableEntry);
-      });
-      if (!listChanged(timetableRef.current, updatedTimetable)) return;
-      timetableRef.current = updatedTimetable;
-      setTimetable(updatedTimetable);
-      toast.info('Timetable updated from Principal portal');
-    });
-
-    return () => {
-      classesUnsubscribe();
-      teachersUnsubscribe();
-      studentsUnsubscribe();
-      feeDataUnsubscribe();
-      attendanceUnsubscribe();
-      timetableUnsubscribe();
+    const applyReload = async () => {
+      try {
+        const [classesData, teachersData, studentsData, feeData, attendanceData, timetableData] = await Promise.all([
+          loadCollectionFromSupabase('classes'),
+          loadCollectionFromSupabase('teachers'),
+          loadCollectionFromSupabase('students'),
+          loadCollectionFromSupabase('fee_data'),
+          loadCollectionFromSupabase('attendance'),
+          loadCollectionFromSupabase('timetable'),
+        ]);
+        let changed = false;
+        if (classesData && listChanged(classesRef.current, classesData)) {
+          classesRef.current = classesData;
+          setClasses(classesData);
+          toast.info('Class assignments updated from Principal portal');
+          changed = true;
+        }
+        if (teachersData && listChanged(teachersRef.current, teachersData)) {
+          teachersRef.current = teachersData;
+          setTeachers(teachersData);
+          toast.info('Teacher list updated from Principal portal');
+          changed = true;
+        }
+        if (studentsData && listChanged(studentsRef.current, studentsData)) {
+          studentsRef.current = studentsData;
+          setStudents(studentsData);
+          toast.info('Student list updated from Principal portal');
+          changed = true;
+        }
+        if (feeData && listChanged(feeStudentsRef.current, feeData)) {
+          feeStudentsRef.current = feeData;
+          setFeeStudents(feeData);
+          changed = true;
+        }
+        if (attendanceData && listChanged(attendanceRef.current, attendanceData)) {
+          attendanceRef.current = attendanceData;
+          setAttendance(attendanceData);
+          changed = true;
+        }
+        if (timetableData && listChanged(timetableRef.current, timetableData)) {
+          timetableRef.current = timetableData;
+          setTimetable(timetableData);
+          toast.info('Timetable updated from Principal portal');
+          changed = true;
+        }
+        if (changed) console.log('[Sync:RT] PrincipalDashboard reloaded from Supabase');
+      } catch (e: any) {
+        console.warn('[Sync:RT] PrincipalDashboard reload failed:', e?.message);
+      }
     };
+
+    const handlerRef = { current: applyReload };
+    let timer: any = null;
+    const unsub = subscribeRecords(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => handlerRef.current(), 300);
+    });
+
+    return () => { unsub(); if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Search/Filter States
@@ -1989,9 +1963,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
     });
   };
 
-  // Upload all current local state data to Cloud (Firebase)
+  // Upload all current local state data to Cloud (Supabase)
   const handleUploadToCloud = async () => {
-    const confirm = window.confirm("Are you sure you want to upload all local data to Firebase? This will overwrite current Cloud data.");
+    const confirm = window.confirm("Are you sure you want to upload all local data to Supabase? This will overwrite current Cloud data.");
     if (!confirm) return;
 
     toast.info("Uploading data to Cloud...");
@@ -2014,14 +1988,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           const listItems = item.data;
           for (const listItem of listItems) {
             if (listItem && listItem.id) {
-              // sanitizeForFirestore strips 'undefined' values Firestore rejects
-              await setDoc(doc(db, item.col, String(listItem.id)), sanitizeForFirestore(listItem));
+              sbQueueWrite(item.col, String(listItem.id), listItem);
             }
           }
         } else if (item.type === 'object' && item.docId) {
-          await setDoc(doc(db, item.col, item.docId), sanitizeForFirestore(item.data));
+          sbQueueWrite(item.col, item.docId, item.data);
         }
       }
+      await flushSupabase();
 
       // Also persist to localStorage cache so download/restore works consistently
       safeStorage.setItem('acadamis_teachers', JSON.stringify(teachers));
@@ -6319,7 +6293,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   type="button"
                   onClick={async () => {
-                    const confirm = window.confirm("Are you sure you want to download all data from Firebase? This will overwrite your local unsaved data.");
+                    const confirm = window.confirm("Are you sure you want to download all data from the cloud (Supabase)? This will overwrite your local unsaved data.");
                     if(!confirm) return;
                     
                     toast.info("Downloading data from Cloud...");
@@ -6339,15 +6313,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                       for (const item of syncConfig) {
                         if (item.type === 'list') {
-                          const snapshot = await getDocs(collection(db, item.col));
-                          const itemsList: any[] = [];
-                          snapshot.forEach(docSnap => itemsList.push(docSnap.data()));
-                          safeStorage.setItem(item.key, JSON.stringify(itemsList));
+                          const itemsList = await loadCollectionFromSupabase(item.col);
+                          if (itemsList) safeStorage.setItem(item.key, JSON.stringify(itemsList));
                         } else if (item.type === 'object' && item.docId) {
-                          const docSnap = await getDoc(doc(db, item.col, item.docId));
-                          if (docSnap.exists()) {
-                            safeStorage.setItem(item.key, JSON.stringify(docSnap.data()));
-                          }
+                          const objs = await loadCollectionFromSupabase(item.col);
+                          const docData = (objs || []).find((o: any) => String(o.id) === item.docId);
+                          if (docData) safeStorage.setItem(item.key, JSON.stringify(docData));
                         }
                       }
                       toast.success("Successfully downloaded all data from cloud!");
@@ -6377,7 +6348,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     toast.info("Force syncing to cloud...");
                     try {
                       await pushLocalToCloud();
-                      toast.success("Data synced to Firestore!");
+                      toast.success("Data synced to Supabase!");
                     } catch (err: any) {
                       toast.error("Sync failed: " + err.message);
                     }
@@ -6391,13 +6362,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   type="button"
                   onClick={async () => {
-                    toast.info("Testing Firebase connection...");
+                    toast.info("Testing Supabase connection...");
                     try {
-                      const connected = await testFirebaseConnection();
+                      const connected = await testSupabaseConnection();
                       if (connected) {
-                        toast.success("Firebase connected successfully!");
+                        toast.success("Supabase connected successfully!");
                       } else {
-                        toast.error("Firebase connection failed - check rules/database");
+                        toast.error("Supabase connection failed - check schema/policies");
                       }
                     } catch (err: any) {
                       toast.error("Connection test failed: " + err.message);
@@ -6428,11 +6399,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     try {
                       const collections = ['teachers', 'classes', 'students', 'timetable', 'attendance', 'marks', 'fees', 'coordinators', 'fee_data', 'app_settings'];
                       for (const col of collections) {
-                        const snapshot = await getDocs(collection(db, col));
-                        for (const d of snapshot.docs) {
-                            await deleteDoc(doc(db, col, d.id));
+                        const itemsList = await loadCollectionFromSupabase(col);
+                        if (!itemsList) continue;
+                        for (const d of itemsList) {
+                          if (d && d.id !== undefined && d.id !== null) sbQueueDelete(col, String(d.id));
                         }
                       }
+                      await flushSupabase();
                       toast.success("All cloud records successfully deleted.");
                     } catch (error: any) {
                       toast.error("Error nuking database: " + error.message);

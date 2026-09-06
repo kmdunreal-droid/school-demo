@@ -9,9 +9,8 @@ import {
 import { getNotifications, addNotification, saveNotifications, PortalNotification } from '../lib/notificationUtils';
 import { getPeriodStatus, getStatusColor } from '../lib/periodUtils';
 import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, ExamType, UserSession, FeeRecord, DayOfWeek, Assignment, getStudentPhoto } from '../types';
-import { db } from '../firebase';
-import { doc, writeBatch, onSnapshot, collection, query, orderBy } from 'firebase/firestore';
-import { listChanged, sanitizeForFirestore } from '../lib/firestoreUtils';
+import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
+import { listChanged } from '../lib/firestoreUtils';
 
 interface TeacherDashboardProps {
   userSession: UserSession;
@@ -99,78 +98,60 @@ export default function TeacherDashboard({
   useEffect(() => { timetableRef.current = timetable; }, [timetable]);
   useEffect(() => { attendanceRef.current = attendance; }, [attendance]);
 
-  // Real-time Firebase listeners for cross-portal sync (Teacher Dashboard)
+  // Real-time Supabase listener — WebSocket push; doosri devices ki changes turant apply
   useEffect(() => {
-    // Listen for class changes (teacher reassignment)
-    const classesUnsubscribe = onSnapshot(collection(db, 'classes'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return; // skip echoes of our own pending writes
-      const updatedClasses: Class[] = [];
-      snapshot.forEach(d => {
-        updatedClasses.push({ id: d.id, ...d.data() } as Class);
-      });
-      // Deep per-item compare (catches same-length edits that length checks missed)
-      if (!listChanged(classesRef.current, updatedClasses)) return;
-      classesRef.current = updatedClasses;
-      setClasses(updatedClasses);
-      toast.info('Class assignments updated from Principal portal');
-    });
-
-    // Listen for teacher changes
-    const teachersUnsubscribe = onSnapshot(collection(db, 'teachers'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedTeachers: Teacher[] = [];
-      snapshot.forEach(d => {
-        updatedTeachers.push({ id: d.id, ...d.data() } as Teacher);
-      });
-      if (!listChanged(teachersRef.current, updatedTeachers)) return;
-      teachersRef.current = updatedTeachers;
-      setTeachers(updatedTeachers);
-    });
-
-    // Listen for student changes
-    const studentsUnsubscribe = onSnapshot(collection(db, 'students'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedStudents: Student[] = [];
-      snapshot.forEach(d => {
-        updatedStudents.push({ id: d.id, ...d.data() } as Student);
-      });
-      if (!listChanged(studentsRef.current, updatedStudents)) return;
-      studentsRef.current = updatedStudents;
-      setStudents(updatedStudents);
-    });
-
-    // Listen for timetable changes
-    const timetableUnsubscribe = onSnapshot(collection(db, 'timetable'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedTimetable: TimetableEntry[] = [];
-      snapshot.forEach(d => {
-        updatedTimetable.push({ id: d.id, ...d.data() } as TimetableEntry);
-      });
-      if (!listChanged(timetableRef.current, updatedTimetable)) return;
-      timetableRef.current = updatedTimetable;
-      setTimetable(updatedTimetable);
-      toast.info('Timetable updated from Principal portal');
-    });
-
-    // Listen for attendance changes
-    const attendanceUnsubscribe = onSnapshot(query(collection(db, 'attendance'), orderBy('date', 'desc')), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedAttendance: Attendance[] = [];
-      snapshot.forEach(d => {
-        updatedAttendance.push({ id: d.id, ...d.data() } as Attendance);
-      });
-      if (!listChanged(attendanceRef.current, updatedAttendance)) return;
-      attendanceRef.current = updatedAttendance;
-      setAttendance(updatedAttendance);
-    });
-
-    return () => {
-      classesUnsubscribe();
-      teachersUnsubscribe();
-      studentsUnsubscribe();
-      timetableUnsubscribe();
-      attendanceUnsubscribe();
+    const applyReload = async () => {
+      try {
+        const [classesData, teachersData, studentsData, timetableData, attendanceData] = await Promise.all([
+          loadCollectionFromSupabase('classes'),
+          loadCollectionFromSupabase('teachers'),
+          loadCollectionFromSupabase('students'),
+          loadCollectionFromSupabase('timetable'),
+          loadCollectionFromSupabase('attendance'),
+        ]);
+        let changed = false;
+        if (classesData && listChanged(classesRef.current, classesData)) {
+          classesRef.current = classesData;
+          setClasses(classesData);
+          toast.info('Class assignments updated from Principal portal');
+          changed = true;
+        }
+        if (teachersData && listChanged(teachersRef.current, teachersData)) {
+          teachersRef.current = teachersData;
+          setTeachers(teachersData);
+          changed = true;
+        }
+        if (studentsData && listChanged(studentsRef.current, studentsData)) {
+          studentsRef.current = studentsData;
+          setStudents(studentsData);
+          changed = true;
+        }
+        if (timetableData && listChanged(timetableRef.current, timetableData)) {
+          timetableRef.current = timetableData;
+          setTimetable(timetableData);
+          toast.info('Timetable updated from Principal portal');
+          changed = true;
+        }
+        if (attendanceData && listChanged(attendanceRef.current, attendanceData)) {
+          attendanceRef.current = attendanceData;
+          setAttendance(attendanceData);
+          changed = true;
+        }
+        if (changed) console.log('[Sync:RT] TeacherDashboard reloaded from Supabase');
+      } catch (e: any) {
+        console.warn('[Sync:RT] TeacherDashboard reload failed:', e?.message);
+      }
     };
+
+    const handlerRef = { current: applyReload };
+    let timer: any = null;
+    const unsub = subscribeRecords(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => handlerRef.current(), 300);
+    });
+
+    return () => { unsub(); if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
   const [timetableSubTab, setTimetableSubTab] = useState<'my' | 'class'>('my');
@@ -886,14 +867,12 @@ export default function TeacherDashboard({
     toast.success(`Report saved for ${student.name} — visible in Principal Report.`);
   };
 
-  // Auto-sync marks to Firebase Firestore (cloud) so data survives refresh / other devices
+  // Auto-sync marks to Supabase (cloud) so data survives refresh / other devices
   const syncMarksToFirestore = async (removed: Mark[], recs: Mark[]) => {
-    if (!db) return;
     try {
-      const batch = writeBatch(db);
-      removed.forEach(m => { if (m && m.id) batch.delete(doc(db, 'marks', m.id)); });
-      recs.forEach(m => { if (m && m.id) batch.set(doc(db, 'marks', m.id), sanitizeForFirestore(m)); });
-      await batch.commit();
+      removed.forEach(m => { if (m && m.id) sbQueueDelete('marks', String(m.id)); });
+      recs.forEach(m => { if (m && m.id) sbQueueWrite('marks', String(m.id), m); });
+      await flushSupabase();
     } catch (err) {
       console.error('Marks cloud sync failed', err);
       toast.error('Saved on this device; cloud sync failed');

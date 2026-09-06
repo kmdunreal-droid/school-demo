@@ -1,6 +1,5 @@
-import { db } from '../firebase';
-import { doc, setDoc, onSnapshot, collection, query, orderBy } from 'firebase/firestore';
-import { listChanged, sanitizeForFirestore } from '../lib/firestoreUtils';
+import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, flushSupabase } from '../lib/supabaseSync';
+import { listChanged } from '../lib/firestoreUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -103,89 +102,64 @@ export default function StudentDashboard({
   useEffect(() => { marksRef.current = marks; }, [marks]);
   useEffect(() => { assignmentsRef.current = assignments; }, [assignments]);
 
-  // Real-time Firebase listeners for cross-portal sync (Student Dashboard)
+  // Real-time Supabase listener — WebSocket push; doosri devices ki changes turant apply
   useEffect(() => {
-    // Listen for student changes (profile updates)
-    const studentsUnsubscribe = onSnapshot(collection(db, 'students'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return; // skip echoes of our own pending writes
-      const updatedStudents: Student[] = [];
-      snapshot.forEach(d => {
-        updatedStudents.push({ id: d.id, ...d.data() } as Student);
-      });
-      // Deep per-item compare (catches same-length edits that length checks missed)
-      if (!listChanged(studentsRef.current, updatedStudents)) return;
-      studentsRef.current = updatedStudents;
-      setStudents(updatedStudents);
-    });
-
-    // Listen for class changes (teacher reassignment affects student's class)
-    const classesUnsubscribe = onSnapshot(collection(db, 'classes'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedClasses: Class[] = [];
-      snapshot.forEach(d => {
-        updatedClasses.push({ id: d.id, ...d.data() } as Class);
-      });
-      if (!listChanged(classesRef.current, updatedClasses)) return;
-      classesRef.current = updatedClasses;
-      setClasses(updatedClasses);
-    });
-
-    // Listen for timetable changes
-    const timetableUnsubscribe = onSnapshot(collection(db, 'timetable'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedTimetable: TimetableEntry[] = [];
-      snapshot.forEach(d => {
-        updatedTimetable.push({ id: d.id, ...d.data() } as TimetableEntry);
-      });
-      if (!listChanged(timetableRef.current, updatedTimetable)) return;
-      timetableRef.current = updatedTimetable;
-      setTimetable(updatedTimetable);
-    });
-
-    // Listen for attendance changes
-    const attendanceUnsubscribe = onSnapshot(query(collection(db, 'attendance'), orderBy('date', 'desc')), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedAttendance: Attendance[] = [];
-      snapshot.forEach(d => {
-        updatedAttendance.push({ id: d.id, ...d.data() } as Attendance);
-      });
-      if (!listChanged(attendanceRef.current, updatedAttendance)) return;
-      attendanceRef.current = updatedAttendance;
-      setAttendance(updatedAttendance);
-    });
-
-    // Listen for marks changes
-    const marksUnsubscribe = onSnapshot(collection(db, 'marks'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedMarks: Mark[] = [];
-      snapshot.forEach(d => {
-        updatedMarks.push({ id: d.id, ...d.data() } as Mark);
-      });
-      if (!listChanged(marksRef.current, updatedMarks)) return;
-      marksRef.current = updatedMarks;
-      setMarks(updatedMarks);
-    });
-
-    // Listen for assignments changes
-    const assignmentsUnsubscribe = onSnapshot(collection(db, 'assignments'), (snapshot) => {
-      if (snapshot.metadata.hasPendingWrites) return;
-      const updatedAssignments: Assignment[] = [];
-      snapshot.forEach(d => {
-        updatedAssignments.push({ id: d.id, ...d.data() } as Assignment);
-      });
-      if (!listChanged(assignmentsRef.current, updatedAssignments)) return;
-      assignmentsRef.current = updatedAssignments;
-      setAssignments(updatedAssignments);
-    });
-
-    return () => {
-      studentsUnsubscribe();
-      classesUnsubscribe();
-      timetableUnsubscribe();
-      attendanceUnsubscribe();
-      marksUnsubscribe();
-      assignmentsUnsubscribe();
+    const applyReload = async () => {
+      try {
+        const [studentsData, classesData, timetableData, attendanceData, marksData, assignmentsData] = await Promise.all([
+          loadCollectionFromSupabase('students'),
+          loadCollectionFromSupabase('classes'),
+          loadCollectionFromSupabase('timetable'),
+          loadCollectionFromSupabase('attendance'),
+          loadCollectionFromSupabase('marks'),
+          loadCollectionFromSupabase('assignments'),
+        ]);
+        let changed = false;
+        if (studentsData && listChanged(studentsRef.current, studentsData)) {
+          studentsRef.current = studentsData;
+          setStudents(studentsData);
+          changed = true;
+        }
+        if (classesData && listChanged(classesRef.current, classesData)) {
+          classesRef.current = classesData;
+          setClasses(classesData);
+          changed = true;
+        }
+        if (timetableData && listChanged(timetableRef.current, timetableData)) {
+          timetableRef.current = timetableData;
+          setTimetable(timetableData);
+          changed = true;
+        }
+        if (attendanceData && listChanged(attendanceRef.current, attendanceData)) {
+          attendanceRef.current = attendanceData;
+          setAttendance(attendanceData);
+          changed = true;
+        }
+        if (marksData && listChanged(marksRef.current, marksData)) {
+          marksRef.current = marksData;
+          setMarks(marksData);
+          changed = true;
+        }
+        if (assignmentsData && listChanged(assignmentsRef.current, assignmentsData)) {
+          assignmentsRef.current = assignmentsData;
+          setAssignments(assignmentsData);
+          changed = true;
+        }
+        if (changed) console.log('[Sync:RT] StudentDashboard reloaded from Supabase');
+      } catch (e: any) {
+        console.warn('[Sync:RT] StudentDashboard reload failed:', e?.message);
+      }
     };
+
+    const handlerRef = { current: applyReload };
+    let timer: any = null;
+    const unsub = subscribeRecords(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => handlerRef.current(), 300);
+    });
+
+    return () => { unsub(); if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -368,11 +342,10 @@ export default function StudentDashboard({
     
     setStudents(prev => prev.map(s => s.id === studentProfile.id ? updatedStudent : s));
     
-    // Also save to database
+    // Also save to database (Supabase)
     try {
-      const studentRef = doc(db, 'students', studentProfile.id);
-      // sanitizeForFirestore strips 'undefined' values Firestore rejects
-      await setDoc(studentRef, sanitizeForFirestore(updatedStudent), { merge: true });
+      sbQueueWrite('students', String(studentProfile.id), updatedStudent);
+      await flushSupabase();
       toast.success("ID Card design saved permanently!");
     } catch (err) {
       console.error(err);

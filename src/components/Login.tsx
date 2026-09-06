@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { GraduationCap, Mail, Lock, Eye, EyeOff, Shield, User, Users, AlertCircle } from 'lucide-react';
 import { Role, UserSession, Teacher, Student, Coordinator } from '../types';
-import { auth } from '../firebase';
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, createUserWithEmailAndPassword } from 'firebase/auth';
+import { supabase } from '../supabase';
 import { toast } from 'sonner';
 
 interface LoginProps {
@@ -108,10 +107,14 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
       return;
     }
 
-    // 6. Fallback to Firebase for generic Principal/Secure Admin
+    // 6. Fallback — Cloud Register (Supabase Auth) for generic Principal/Secure Admin
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
-      const user = userCredential.user;
+      const { data: cred, error: authErr } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (authErr) throw authErr;
+      const user = cred.user;
       if (user && user.email) {
         onLogin({
           role: 'principal',

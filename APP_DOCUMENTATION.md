@@ -1,7 +1,7 @@
 # NSB1 School Management System - Technical Documentation
 
 ## Overview
-A comprehensive school management PWA built with React 19, TypeScript, Vite, Firebase Firestore, and Tailwind CSS. Features role-based portals for Principal, Coordinator, Teacher, and Student with real-time cross-device synchronization.
+A comprehensive school management PWA built with React 19, TypeScript, Vite, Supabase (PostgreSQL), and Tailwind CSS. Features role-based portals for Principal, Coordinator, Teacher, and Student with real-time cross-device synchronization.
 
 ---
 
@@ -11,8 +11,8 @@ A comprehensive school management PWA built with React 19, TypeScript, Vite, Fir
 - **Frontend**: React 19 + TypeScript + Vite 6
 - **Styling**: Tailwind CSS 4 + Lucide React icons
 - **State**: React hooks (useState, useEffect, useMemo, useCallback, useRef)
-- **Database**: Firebase Firestore (with localStorage fallback)
-- **Auth**: Custom email/password (Firebase Auth ready)
+- **Database**: Supabase PostgreSQL `records` table (with localStorage fallback)
+- **Auth**: Custom email/password (Supabase Auth ready)
 - **PWA**: Workbox service worker + Web App Manifest
 - **Charts**: Recharts
 - **Animations**: Motion (framer-motion)
@@ -22,11 +22,12 @@ A comprehensive school management PWA built with React 19, TypeScript, Vite, Fir
 ### Project Structure
 ```
 src/
-├── App.tsx                 # Root: auth, routing, Firestore sync orchestration
-├── firebase.ts             # Firebase init (Firestore, Auth, Analytics)
+├── App.tsx                 # Root: auth, routing, Supabase sync orchestration
+├── supabase.ts             # Supabase client init (Data + Realtime)
 ├── types.ts                # All TypeScript interfaces
 ├── initialData.ts          # Seed data (25 students, 6 teachers, 4 classes)
-├── seed-firestore.ts       # One-time Firestore seeding script
+├── lib/
+│   ├── supabaseSync.ts     # Queue/flush/load + realtime (postgres_changes) helpers
 ├── lib/
 │   ├── feeEngine.ts        # Core fee/dues logic (payments, otherFunds, dues)
 │   ├── safeStorage.ts      # localStorage wrapper (SSR-safe)

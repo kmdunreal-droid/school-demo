@@ -2,8 +2,7 @@
 import { Toaster, toast } from 'sonner';
 import { Download, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db } from './firebase';
-import { collection, getDocs, doc, setDoc, deleteDoc, writeBatch, getDoc, arrayUnion, onSnapshot } from 'firebase/firestore';
+import { sbQueueWrite, sbQueueDelete, flushSupabase, loadAllFromSupabase, subscribeRecords } from './lib/supabaseSync';
 import { Teacher, Student, Coordinator, Class, TimetableEntry, Attendance, Mark, UserSession, FeeRecord, AppSettings, StudentFeeData, Assignment } from './types';
 import { 
   INITIAL_TEACHERS, 
@@ -22,7 +21,7 @@ import StudentDashboard from './components/StudentDashboard';
 
 import { safeStorage } from './lib/safeStorage';
 import { sanitizeForFirestore } from './lib/firestoreUtils';
-import { neonQueueWrite, neonQueueDelete, neonHeartbeat, loadAllFromNeon, loadCollectionFromNeon, ensureNeonSchema, flushNeon } from './lib/neonSync';
+
 
 function safeParse<T>(key: string, fallback: T): T {
   try {
@@ -203,8 +202,7 @@ export default function App() {
   // Real-time listeners tab hi setup hon jab initial sync complete ho
   const [syncReady, setSyncReady] = useState(false);
   const isSyncComplete = useRef<boolean>(false);
-  // REF for pullRemoteData — avoids stale closure in heartbeat poll
-  const pullRemoteRef = useRef<((reason: string) => Promise<void>) | null>(null);
+  
 
   const prevTeachers = useRef<string>('');
   const prevClasses = useRef<string>('');
@@ -218,140 +216,39 @@ export default function App() {
   const prevAppSettings = useRef<string>('');
   const prevAssignments = useRef<string>('');
 
-  // --- DEBOUNCED BATCHED FIRESTORE WRITER ---
-  // Collects writes/deletes and flushes them in a single writeBatch after
-  // a short debounce window. This dramatically cuts network round-trips
-  // during rapid typing/editing instead of firing one setDoc per item.
+  // --- QUEUED SUPABASE WRITER ---
+  // Har write/delete Supabase queue mein jata hai aur debounce ke baad batched
+  // upsert se flush hota hai. Supabase par koi write quota nahi hai.
   const [syncPaused, setSyncPaused] = useState(false);
   const syncPausedUntil = useRef(0);
-  const pendingBatch = useRef<{ set: { ref: any; data: any }[]; del: any[] }>({
-    set: [],
-    del: []
-  });
   const batchTimer = useRef<any>(null);
-  const batchRetryCount = useRef<number>(0);
 
   const queueBatchWrite = (col: string, id: string, data: any) => {
-    pendingBatch.current.set.push({
-      ref: doc(db, col, id),
-      data: sanitizeForFirestore(data)
-    });
-    // NEON MIRROR — har write Neon Postgres mein bhi jata hai (backup/fallback)
-    neonQueueWrite(col, id, data);
-    // NEON HEARTBEAT — doosri devices ko pata chale (Firebase quota fail par bhi sync ho)
-    neonHeartbeat(deviceIdRef.current);
+    sbQueueWrite(col, id, data);
     flushBatchDebounced();
   };
 
   const queueBatchDelete = (col: string, id: string) => {
-    pendingBatch.current.del.push(doc(db, col, id));
-    // NEON MIRROR — delete Neon se bhi
-    neonQueueDelete(col, id);
-    // NEON HEARTBEAT — delete bhi doosri devices tak pahunche
-    neonHeartbeat(deviceIdRef.current);
+    sbQueueDelete(col, id);
     flushBatchDebounced();
   };
 
-  // --- SYNC HEARTBEAT (cross-device fallback) ---
-  // onSnapshot listeners kabhi-kabhi (WebChannel block, PWA cache, IndexedDB lock)
-  // remote updates nahi late — is liye har device push ke baad ek chhota 'sync_meta/global'
-  // heartbeat doc update karti hai. Baqi devices sirf YEH ek doc poll karti hain (20s, quota-safe)
-  // aur jab heartbeat badla ho to poora data Firestore se pull kar leti hain.
-  const deviceIdRef = useRef(Math.random().toString(36).slice(2) + Date.now().toString(36));
-  const lastRemoteMeta = useRef(0);   // aakhri heartbeat timestamp jo is device ne dekha
-  const lastOwnPush = useRef(0);      // is device ki aakhri push ka timestamp (self-echo skip)
-  const lastNeonMetaTs = useRef(0);   // aakhri NEON heartbeat updatedAt jo is device ne process kiya
-  const lastNeonFullSync = useRef(0); // aakhri NEON full-pull ka timestamp
-
-  const bumpSyncMeta = async (cols: string[]) => {
-    try {
-      const ts = Date.now();
-      lastOwnPush.current = ts;
-      lastRemoteMeta.current = ts;
-      await setDoc(doc(db, 'sync_meta', 'global'), {
-        updatedAt: ts,
-        byDevice: deviceIdRef.current,
-        collections: arrayUnion(...cols),
-      }, { merge: true });
-    } catch (e: any) {
-      console.warn('[Sync] heartbeat bump failed:', e?.message);
-    }
-  };
-
   const flushBatch = async () => {
-    if (pendingBatch.current.set.length === 0 && pendingBatch.current.del.length === 0) return;
-
-    // QUOTA-AWARE: agar pause mein hai to skip — local mein rakho, baad mein retry
-    if (Date.now() < syncPausedUntil.current) {
-      console.log('[Sync] paused (quota) — writes queued locally, will resume after', new Date(syncPausedUntil.current).toLocaleTimeString());
-      return;
-    }
-
-    // CRITICAL FIX: Snapshot current ops into local arrays, then clear pending queue
-    const setOps = [...pendingBatch.current.set];
-    const delOps = [...pendingBatch.current.del];
-    pendingBatch.current = { set: [], del: [] };
-    // Collection names extract karo
-    const colNames = Array.from(new Set([
-      ...setOps.map(o => String((o?.ref as any)?.parent?.id || '').replace(/^\//, '').split('/')[0] || ''),
-      ...delOps.map(d => String((d as any)?.parent?.id || '').replace(/^\//, '').split('/')[0] || ''),
-    ].filter(Boolean)));
-    let idx = 0;
-    try {
-      // Firestore writeBatch limit is 500 operations per commit.
-      while (idx < setOps.length || delOps.length > 0) {
-        const batch = writeBatch(db);
-        let count = 0;
-        while (idx < setOps.length && count < 450) {
-          const op = setOps[idx++];
-          if (op) { batch.set(op.ref, op.data, { merge: true }); count++; }
-        }
-        while (delOps.length > 0 && count < 500) {
-          const d = delOps.shift();
-          if (d) { batch.delete(d); count++; }
-        }
-        await batch.commit();
-      }
-      // Success — reset retry counter and clear any sync error banner.
-      batchRetryCount.current = 0;
+    const ok = await flushSupabase();
+    if (ok) {
       setSyncError(null);
       setSyncPaused(false);
-      // HEARTBEAT — doosri devices ko batao ke data badal gaya
-      if (colNames.length > 0) {
-        bumpSyncMeta(colNames);
-        console.log('[Sync] batch pushed + heartbeat bumped:', colNames.join(', '));
-      }
-    } catch (e: any) {
-      console.warn("Firestore batch write failed:", e?.message);
-      // RESOURCE_EXHAUSTED → pause writes for 45 seconds (quota bachao)
-      const isQuota = e?.code === 'resource-exhausted' || String(e?.message || '').includes('RESOURCE_EXHAUSTED');
-      if (isQuota) {
-        syncPausedUntil.current = Date.now() + 45000;
-        setSyncPaused(true);
-        toast.warning('Cloud sync paused 45s (write quota reached). Changes saved locally & will auto-resume.', { duration: 6000 });
-      }
-      // Re-queue ALL failed ops (remaining setOps + all delOps) so NO data is lost
-      const remainingSet = setOps.slice(idx);
-      pendingBatch.current.set.unshift(...remainingSet);
-      pendingBatch.current.del.unshift(...delOps);
-      // Retry with backoff (sirf quota nahi hai to)
-      batchRetryCount.current += 1;
-      setSyncError(isQuota ? 'Quota exceeded — paused 45s' : (e?.message || 'Cloud sync failed — retrying'));
-      if (batchRetryCount.current <= 3 && !isQuota) {
-        setTimeout(() => { flushBatch(); }, 5000);
-      } else if (!isQuota) {
-        batchRetryCount.current = 0;
-        toast.error('Cloud sync failing: ' + (e?.message || 'unknown error') + '. Changes saved locally — will retry.');
-      }
+    } else {
+      setSyncError('Cloud sync failed — changes saved locally, retrying');
     }
   };
 
-  // AGGRESSIVE DEBOUNCE: 3 seconds (quota bachane ke liye writes kam karo)
+  // Debounce network round-trips (koi quota nahi, sirf efficiency).
   const flushBatchDebounced = () => {
     if (batchTimer.current) clearTimeout(batchTimer.current);
     batchTimer.current = setTimeout(() => {
       flushBatch();
-    }, 3000);
+    }, 1200);
   };
 
   // Flush any remaining writes before the tab is closed/navigated away.
@@ -366,107 +263,51 @@ export default function App() {
     };
   }, []);
 
-  // --- REMOTE PULL (polling fallback) ---
-  // Poora data Firestore se fetch karke state + prev-refs update karta hai.
-  // prev-refs isliye update hote hain ke differential push effects yeh data
-  // dobara cloud par na likhein (loop na bane).
-  // NOTE: No state deps — uses only stable Firestore calls to avoid stale closure
-  const pullRemoteData = useCallback(async (reason: string) => {
-    try {
-      const [tS, cS, sS, ttS, aS, mS, fS, coS, fdS, asgS] = await Promise.all([
-        getDocs(collection(db, 'teachers')),
-        getDocs(collection(db, 'classes')),
-        getDocs(collection(db, 'students')),
-        getDocs(collection(db, 'timetable')),
-        getDocs(collection(db, 'attendance')),
-        getDocs(collection(db, 'marks')),
-        getDocs(collection(db, 'fees')),
-        getDocs(collection(db, 'coordinators')),
-        getDocs(collection(db, 'fee_data')),
-        getDocs(collection(db, 'assignments')),
-      ]);
-      const arr = (snap: any) => { const out: any[] = []; snap.forEach((d: any) => out.push(d.data())); return out; };
-      const rTeachers = arr(tS) as Teacher[];
-      const rClasses = arr(cS) as Class[];
-      const rStudents = arr(sS) as Student[];
-      const rTimetable = arr(ttS) as TimetableEntry[];
-      const rAttendance = arr(aS) as Attendance[];
-      const rMarks = arr(mS) as Mark[];
-      const rFees = arr(fS) as FeeRecord[];
-      const rCoordinators = arr(coS) as Coordinator[];
-      const rFeeStudents = arr(fdS) as StudentFeeData[];
-      const rAssignments = arr(asgS) as Assignment[];
+  
 
-      if (rTeachers.length > 0) setTeachers(rTeachers);
-      if (rClasses.length > 0) setClasses(rClasses);
-      if (rStudents.length > 0) setStudents(rStudents);
-      setTimetable(rTimetable);
-      setAttendance(rAttendance);
-      if (rMarks.length > 0) setMarks(rMarks);
-      if (rFees.length > 0) setFees(rFees);
-      if (rCoordinators.length > 0) setCoordinators(rCoordinators);
-      if (rFeeStudents.length > 0) setFeeStudents(rFeeStudents);
-      if (rAssignments.length > 0) setAssignments(rAssignments);
 
-      // Update prev-refs to exactly what we pulled (prevents re-push loop)
-      prevTeachers.current = JSON.stringify(rTeachers);
-      prevClasses.current = JSON.stringify(rClasses);
-      prevStudents.current = JSON.stringify(rStudents);
-      prevTimetable.current = JSON.stringify(rTimetable);
-      prevAttendance.current = JSON.stringify(rAttendance);
-      prevMarks.current = JSON.stringify(rMarks);
-      prevFees.current = JSON.stringify(rFees);
-      prevCoordinators.current = JSON.stringify(rCoordinators);
-      prevFeeStudents.current = JSON.stringify(rFeeStudents);
-      prevAssignments.current = JSON.stringify(rAssignments);
+  
 
-      // localStorage cache bhi refresh karo
-      safeStorage.setItem('acadamis_teachers', prevTeachers.current);
-      safeStorage.setItem('acadamis_classes', prevClasses.current);
-      safeStorage.setItem('acadamis_students', prevStudents.current);
-      safeStorage.setItem('acadamis_timetable', prevTimetable.current);
-      safeStorage.setItem('acadamis_attendance', prevAttendance.current);
-      safeStorage.setItem('acadamis_marks', prevMarks.current);
-      safeStorage.setItem('acadamis_fees', prevFees.current);
-      safeStorage.setItem('acadamis_coordinators', prevCoordinators.current);
-      safeStorage.setItem('school_fee_data', prevFeeStudents.current);
-      safeStorage.setItem('acadamis_assignments', prevAssignments.current);
 
-      console.log(`[Sync] Remote data pulled (${reason}) — students: ${rStudents.length}, fees: ${rFees.length}, fee_data: ${rFeeStudents.length}`);
-    } catch (e: any) {
-      console.warn('[Sync] remote pull failed:', e?.message);
-    }
-  }, []); // No state deps — uses only stable Firestore calls
-// --- NEON FULL PULL — poori state Neon Postgres se update karo (Firebase quota fail par cross-device sync) ---
-  // Har collection ko prevRef se compare karke hi update karte hain — loop nahi banta.
-  const pullFromNeonFull = useCallback(async (reason: string) => {
-    try {
-      const neonData = await loadAllFromNeon();
+
+
+  // --- REALTIME LISTENER — Supabase WebSocket push se live cross-device sync ---
+  // Ek hi channel `records` table par; koi bhi INSERT/UPDATE/DELETE → debounce
+  // ke baad poori state refresh. Prev-ref comparison se echo loop nahi banta.
+  useEffect(() => {
+    if (!userSession || !syncReady) return;
+
+    let rtTimer: any = null;
+
+    const applyData = async (reason: string) => {
+      const data = await loadAllFromSupabase();
+      if (!data) return;
+
       const applyList = <T extends { id: any }>(
         list: any[] | undefined,
         prevRef: React.MutableRefObject<string>,
         setter: (v: T[]) => void,
         storeKey: string
       ) => {
-        if (!list || list.length === 0) return;
+        if (!list) return;
         const str = JSON.stringify(list);
-        if (str !== prevRef.current) {
-          setter(list as T[]);
-          prevRef.current = str;
-          safeStorage.setItem(storeKey, str);
-        }
+        if (str === prevRef.current) return;
+        setter(list as T[]);
+        prevRef.current = str;
+        safeStorage.setItem(storeKey, str);
       };
-      applyList(neonData['students'], prevStudents, setStudents, 'acadamis_students');
-      applyList(neonData['teachers'], prevTeachers, setTeachers, 'acadamis_teachers');
-      applyList(neonData['classes'], prevClasses, setClasses, 'acadamis_classes');
-      applyList(neonData['timetable'], prevTimetable, setTimetable, 'acadamis_timetable');
-      applyList(neonData['attendance'], prevAttendance, setAttendance, 'acadamis_attendance');
-      applyList(neonData['marks'], prevMarks, setMarks, 'acadamis_marks');
-      applyList(neonData['fees'], prevFees, setFees, 'acadamis_fees');
-      applyList(neonData['coordinators'], prevCoordinators, setCoordinators, 'acadamis_coordinators');
-      applyList(neonData['fee_data'], prevFeeStudents, setFeeStudents, 'school_fee_data');
-      applyList(neonData['assignments'], prevAssignments, setAssignments, 'acadamis_assignments');
-      const settingsArr = neonData['app_settings'] || [];
+
+      applyList(data['teachers'], prevTeachers, setTeachers, 'acadamis_teachers');
+      applyList(data['classes'], prevClasses, setClasses, 'acadamis_classes');
+      applyList(data['students'], prevStudents, setStudents, 'acadamis_students');
+      applyList(data['timetable'], prevTimetable, setTimetable, 'acadamis_timetable');
+      applyList(data['attendance'], prevAttendance, setAttendance, 'acadamis_attendance');
+      applyList(data['marks'], prevMarks, setMarks, 'acadamis_marks');
+      applyList(data['fees'], prevFees, setFees, 'acadamis_fees');
+      applyList(data['coordinators'], prevCoordinators, setCoordinators, 'acadamis_coordinators');
+      applyList(data['fee_data'], prevFeeStudents, setFeeStudents, 'school_fee_data');
+      applyList(data['assignments'], prevAssignments, setAssignments, 'acadamis_assignments');
+      const settingsArr = data['app_settings'] || [];
       if (settingsArr.length > 0) {
         const s = settingsArr[0] as AppSettings;
         const sStr = JSON.stringify(s);
@@ -476,269 +317,67 @@ export default function App() {
           safeStorage.setItem('acadamis_app_settings', sStr);
         }
       }
-      console.log(`[Sync:Neon] full pull applied (${reason})`);
-    } catch (e: any) {
-      console.warn('[Sync:Neon] full pull failed:', e?.message);
-    }
-  }, []); // No state deps — only loads from Neon and sets state
-
-  // Keep ref in sync so heartbeat poll always uses latest version
-  useEffect(() => { pullRemoteRef.current = pullRemoteData; }, [pullRemoteData]);
-
-  // Keep ref in sync so heartbeat poll always uses latest version
-  useEffect(() => { pullRemoteRef.current = pullRemoteData; }, [pullRemoteData]);
-
-  // --- HEARTBEAT POLL — har 20s sirf sync_meta doc check (1 read), focus par bhi ---
-  // + 60s periodic full-sync fallback (agar onSnapshot/heartbeat dono fail hon tab bhi sync ho)
-  useEffect(() => {
-    if (!userSession) return;
-    let stopped = false;
-    let lastFullSync = Date.now();
-    const checkRemote = async () => {
-      if (stopped || !isSyncComplete.current) return;
-      // Local writes pending hain to pehle woh flush hon — pull is tick skip
-      if (pendingBatch.current.set.length > 0 || pendingBatch.current.del.length > 0) return;
-      try {
-        const snap = await getDoc(doc(db, 'sync_meta', 'global'));
-        if (!snap.exists()) return;
-        const ts = Number((snap.data() as any)?.updatedAt) || 0;
-        if (ts <= 0) return;
-        if (ts !== lastRemoteMeta.current && ts !== lastOwnPush.current) {
-          // KISI DOOSRI device ne data badla hai — full pull karo
-          lastRemoteMeta.current = ts;
-          lastFullSync = Date.now();
-          await pullRemoteData('heartbeat');
-        } else {
-          lastRemoteMeta.current = ts;
-        }
-        // PERIODIC FULL-SYNC FALLBACK: har 60s bhi pull karo (heartbeat miss hone par bhi sync ho)
-        const now = Date.now();
-        if (now - lastFullSync >= 60000) {
-          lastFullSync = now;
-          await pullRemoteData('periodic-60s');
-        }
-      } catch (e: any) {
-        console.warn('[Sync] heartbeat poll failed:', e?.message);
-      }
-
-      // ===== NEON CROSS-DEVICE CHECK =====
-      // Firebase write quota fail hone par bhi doosri devices ki changes Neon se mil jayen.
-      try {
-        // 1) Neon heartbeat check — doosri device ne data likha?
-        const metaList = await loadCollectionFromNeon('sync_meta');
-        const meta = (metaList || [])[0] as any;
-        const nu = Number(meta?.updatedAt) || 0;
-        const nd = String(meta?.byDevice || '');
-        if (nu > 0 && nu !== lastNeonMetaTs.current && nd !== deviceIdRef.current) {
-          lastNeonMetaTs.current = nu;
-          lastNeonFullSync.current = Date.now();
-          console.log('[Sync:Neon] remote heartbeat detected — pulling full data from Neon');
-          await pullFromNeonFull('neon-heartbeat');
-        } else if (nu > lastNeonMetaTs.current) {
-          lastNeonMetaTs.current = nu;
-        }
-        // 2) PERIODIC NEON FULL-SYNC — har 60s (Firestore periodic miss ho to bhi sync ho)
-        const nNow = Date.now();
-        if (nNow - lastNeonFullSync.current >= 60000) {
-          lastNeonFullSync.current = nNow;
-          await pullFromNeonFull('neon-periodic-60s');
-        }
-      } catch (e: any) {
-        console.warn('[Sync] Neon poll failed, will retry next tick:', e?.message);
-      }
+      console.log(`[Sync:RT] Supabase update applied (${reason})`);
     };
-    const iv = setInterval(checkRemote, 20000);
-    const onVis = () => { if (document.visibilityState === 'visible') checkRemote(); };
-    document.addEventListener('visibilitychange', onVis);
-    window.addEventListener('focus', onVis);
-    // Session shuru hote hi ek baar check — purana pending remote data turant mil jaye
-    const boot = setTimeout(checkRemote, 3000);
+
+    const unsub = subscribeRecords(() => {
+      if (!isSyncComplete.current) return;
+      if (rtTimer) clearTimeout(rtTimer);
+      rtTimer = setTimeout(() => { applyData('realtime'); }, 400);
+    });
+
+    console.log('[Sync:RT] Supabase realtime listener active');
     return () => {
-      stopped = true;
-      clearInterval(iv);
-      clearTimeout(boot);
-      document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('focus', onVis);
-    };
-  }, [userSession]);
-
-
-
-
-  // --- REALTIME LISTENERS — onSnapshot se live sync (doosri device ki changes turant) ---
-  // Yeh effect initial sync complete hone par sab collections par real-time listener lagata hai.
-  // Har snapshot mein data current prevRef se compare hota hai — agar farq ho to state +
-  // prevRef + localStorage + Neon backup update hote hain. Apni hi writes skip hoti hain
-  // (prevRef pehle se updated hoti hai) — echo loop nahi banta.
-  useEffect(() => {
-    if (!userSession || !syncReady) return;
-
-    const applyRemote = <T extends { id: any }>(
-      snap: any,
-      prevRef: React.MutableRefObject<string>,
-      setter: (v: T[]) => void,
-      key: string,
-      storeKey: string,
-      neonCol: string
-    ) => {
-      try {
-        const data: T[] = [];
-        snap.forEach((d: any) => {
-          const v = d.data();
-          if (v && d.id !== undefined) {
-            // Firestore doc id field mein reflect karo
-            data.push({ ...v, id: v.id !== undefined ? v.id : d.id } as T);
-          }
-        });
-        const str = JSON.stringify(data);
-        if (str === prevRef.current || str === '[]') {
-          // Same data ya khali — kuch nahi karna
-          return;
-        }
-        // Remote change mila — apply karo
-        setter(data);
-        prevRef.current = str;
-        safeStorage.setItem(storeKey, str);
-        data.forEach(item => neonQueueWrite(neonCol, String(item.id), item));
-        console.log(`[Sync:RT] ${key} remote update — ${data.length} records`);
-      } catch (e: any) {
-        console.warn(`[Sync:RT] ${key} apply failed:`, e?.message);
-      }
-    };
-
-    const unsubs: (() => void)[] = [];
-    unsubs.push(onSnapshot(collection(db, 'teachers'), (s) => applyRemote(s, prevTeachers, setTeachers, 'teachers', 'acadamis_teachers', 'teachers')));
-    unsubs.push(onSnapshot(collection(db, 'classes'), (s) => applyRemote(s, prevClasses, setClasses, 'classes', 'acadamis_classes', 'classes')));
-    unsubs.push(onSnapshot(collection(db, 'students'), (s) => applyRemote(s, prevStudents, setStudents, 'students', 'acadamis_students', 'students')));
-    unsubs.push(onSnapshot(collection(db, 'timetable'), (s) => applyRemote(s, prevTimetable, setTimetable, 'timetable', 'acadamis_timetable', 'timetable')));
-    unsubs.push(onSnapshot(collection(db, 'attendance'), (s) => applyRemote(s, prevAttendance, setAttendance, 'attendance', 'acadamis_attendance', 'attendance')));
-    unsubs.push(onSnapshot(collection(db, 'marks'), (s) => applyRemote(s, prevMarks, setMarks, 'marks', 'acadamis_marks', 'marks')));
-    unsubs.push(onSnapshot(collection(db, 'fees'), (s) => applyRemote(s, prevFees, setFees, 'fees', 'acadamis_fees', 'fees')));
-    unsubs.push(onSnapshot(collection(db, 'coordinators'), (s) => applyRemote(s, prevCoordinators, setCoordinators, 'coordinators', 'acadamis_coordinators', 'coordinators')));
-    unsubs.push(onSnapshot(collection(db, 'fee_data'), (s) => applyRemote(s, prevFeeStudents, setFeeStudents, 'fee_data', 'school_fee_data', 'fee_data')));
-    unsubs.push(onSnapshot(collection(db, 'assignments'), (s) => applyRemote(s, prevAssignments, setAssignments, 'assignments', 'acadamis_assignments', 'assignments')));
-
-    console.log('[Sync:RT] Real-time listeners active — 10 collections');
-    return () => {
-      unsubs.forEach(u => u());
-      console.log('[Sync:RT] Real-time listeners cleaned up');
+      unsub();
+      if (rtTimer) clearTimeout(rtTimer);
     };
   }, [userSession, syncReady]);
 
 
   useEffect(() => {
-    async function initFirebaseAndSync() {
+    async function initBackendAndSync() {
       try {
-        console.log("Checking Firestore connectivity...");
+        console.log("Checking Supabase connectivity...");
 
-        // NEON bootstrap — schema ensure karo (background, non-blocking)
-        ensureNeonSchema().catch(() => {});
-
-        // Timeout to ensure offline fallback if network fails
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("Firestore connection timeout")), 15000)
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Supabase connection timeout")), 15000)
         );
 
-        // Attempt to fetch one small document to warm up the connection and verify access
-        await Promise.race([
-          getDocs(collection(db, "app_settings")),
-          timeoutPromise
-        ]);
+        const data = await Promise.race([loadAllFromSupabase(), timeoutPromise]);
+        const loadedTeachers = data['teachers'] || [];
+        const loadedClasses = data['classes'] || [];
+        const loadedStudents = data['students'] || [];
+        const loadedTimetable = data['timetable'] || [];
+        const loadedAttendance = data['attendance'] || [];
+        const loadedMarks = data['marks'] || [];
+        const loadedFees = data['fees'] || [];
+        const loadedCoordinators = data['coordinators'] || [];
+        const loadedFeeStudents = data['fee_data'] || [];
+        const loadedAssignments = data['assignments'] || [];
+        const loadedSettings = (data['app_settings'] || [])[0] as AppSettings | null;
 
-        console.log("Connection reached. Fetching full datasets...");
-
-        // Fetch remaining collections concurrently
-        const [
-          teachersSnapshot,
-          classesSnapshot,
-          studentsSnapshot,
-          timetableSnapshot,
-          attendanceSnapshot,
-          marksSnapshot,
-          feesSnapshot,
-          coordinatorsSnapshot,
-          feeDataSnapshot,
-          assignmentsSnapshot
-        ] = await Promise.all([
-          getDocs(collection(db, "teachers")),
-          getDocs(collection(db, "classes")),
-          getDocs(collection(db, "students")),
-          getDocs(collection(db, "timetable")),
-          getDocs(collection(db, "attendance")),
-          getDocs(collection(db, "marks")),
-          getDocs(collection(db, "fees")),
-          getDocs(collection(db, "coordinators")),
-          getDocs(collection(db, "fee_data")),
-          getDocs(collection(db, "assignments"))
-        ]);
-        
-        // Check if collections exist in Cloud Firestore
-        const isDbEmpty = teachersSnapshot.empty &&
-                          classesSnapshot.empty &&
-                          studentsSnapshot.empty;
-
-        if (isDbEmpty) {
-          // ===== NEON FALLBACK — Firestore khali hai to pehle Neon Postgres se load karo =====
-          const neonData = await loadAllFromNeon();
-          const nStudents = neonData['students'] || [];
-          if (nStudents.length > 0) {
-            console.log("Firestore empty — loading data from Neon Postgres fallback...");
-            const nTeachers = neonData['teachers'] || [];
-            const nClasses = neonData['classes'] || [];
-            const nTimetable = neonData['timetable'] || [];
-            const nAttendance = neonData['attendance'] || [];
-            const nMarks = neonData['marks'] || [];
-            const nFees = neonData['fees'] || [];
-            const nCoordinators = neonData['coordinators'] || [];
-            const nFeeStudents = neonData['fee_data'] || [];
-            const nAssignments = neonData['assignments'] || [];
-            const nSettings = (neonData['app_settings'] || [])[0];
-
-            if (nTeachers.length > 0) setTeachers(nTeachers); else setTeachers(INITIAL_TEACHERS);
-            if (nClasses.length > 0) setClasses(nClasses); else setClasses(INITIAL_CLASSES);
-            setStudents(nStudents);
-            if (nTimetable.length > 0) setTimetable(nTimetable); else setTimetable(INITIAL_TIMETABLE);
-            if (nAttendance.length > 0) setAttendance(nAttendance); else setAttendance(INITIAL_ATTENDANCE);
-            if (nMarks.length > 0) setMarks(nMarks); else setMarks(INITIAL_MARKS);
-            if (nFees.length > 0) setFees(nFees); else setFees(INITIAL_FEES);
-            if (nCoordinators.length > 0) setCoordinators(nCoordinators);
-            if (nFeeStudents.length > 0) setFeeStudents(nFeeStudents);
-            if (nAssignments.length > 0) setAssignments(nAssignments);
-            if (nSettings) setAppSettings(nSettings);
-
-            prevTeachers.current = JSON.stringify(nTeachers.length > 0 ? nTeachers : INITIAL_TEACHERS);
-            prevClasses.current = JSON.stringify(nClasses.length > 0 ? nClasses : INITIAL_CLASSES);
-            prevStudents.current = JSON.stringify(nStudents);
-            prevTimetable.current = JSON.stringify(nTimetable.length > 0 ? nTimetable : INITIAL_TIMETABLE);
-            prevAttendance.current = JSON.stringify(nAttendance.length > 0 ? nAttendance : INITIAL_ATTENDANCE);
-            prevMarks.current = JSON.stringify(nMarks.length > 0 ? nMarks : INITIAL_MARKS);
-            prevFees.current = JSON.stringify(nFees.length > 0 ? nFees : INITIAL_FEES);
-            prevCoordinators.current = JSON.stringify(nCoordinators);
-            prevFeeStudents.current = JSON.stringify(nFeeStudents);
-            prevAssignments.current = JSON.stringify(nAssignments);
-            if (nSettings) prevAppSettings.current = JSON.stringify(nSettings);
-
-            isSyncComplete.current = true;
-            setSyncReady(true);
-            toast.success('Firebase khali tha — data Neon Postgres se load ho gaya ✓');
-            return;
-          }
-
-          console.log("Firestore database is empty. Seeding initial datasets into Cloud Firestore...");
-          
+        if (loadedStudents.length === 0) {
+          // ===== SEED — Supabase khali hai to initial datasets likho =====
+          console.log("Supabase records khali — initial datasets seed kar rahe hain...");
           try {
-            await Promise.all([
-              ...INITIAL_TEACHERS.map(t => setDoc(doc(db, "teachers", t.id), sanitizeForFirestore(t))),
-              ...INITIAL_CLASSES.map(c => setDoc(doc(db, "classes", c.id), sanitizeForFirestore(c))),
-              ...INITIAL_STUDENTS.map(s => setDoc(doc(db, "students", s.id), sanitizeForFirestore(s))),
-              ...INITIAL_TIMETABLE.map(tm => setDoc(doc(db, "timetable", tm.id), sanitizeForFirestore(tm))),
-              ...INITIAL_ATTENDANCE.map(a => setDoc(doc(db, "attendance", a.id), sanitizeForFirestore(a))),
-              ...INITIAL_MARKS.map(m => setDoc(doc(db, "marks", m.id), sanitizeForFirestore(m))),
-              ...INITIAL_FEES.map(f => setDoc(doc(db, "fees", f.id), sanitizeForFirestore(f)))
-            ]);
-            console.log("Seeding to Firestore completed successfully.");
+            const seedItems: [string, any[]][] = [
+              ['teachers', INITIAL_TEACHERS],
+              ['classes', INITIAL_CLASSES],
+              ['students', INITIAL_STUDENTS],
+              ['timetable', INITIAL_TIMETABLE],
+              ['attendance', INITIAL_ATTENDANCE],
+              ['marks', INITIAL_MARKS],
+              ['fees', INITIAL_FEES],
+            ];
+            seedItems.forEach(([col, arr]) => {
+              (arr || []).forEach(item => {
+                if (item?.id !== undefined && item?.id !== null) sbQueueWrite(col, String(item.id), item);
+              });
+            });
+            await flushSupabase();
+            console.log("Seeding to Supabase completed successfully.");
           } catch (seedErr) {
-            console.warn("Seeding to Firestore encountered warning:", seedErr);
+            console.warn("Seeding to Supabase warning:", seedErr);
           }
 
           setTeachers(INITIAL_TEACHERS);
@@ -760,46 +399,10 @@ export default function App() {
           prevFeeStudents.current = JSON.stringify([]);
           prevAssignments.current = JSON.stringify([]);
         } else {
-          console.log("Loading datasets from active Cloud Firestore...");
-          
-          const loadedTeachers: Teacher[] = [];
-          teachersSnapshot.forEach(docSnap => loadedTeachers.push(docSnap.data() as Teacher));
+          // ===== LOAD — Supabase se active data =====
+          console.log("Loading datasets from Supabase...");
 
-          const loadedClasses: Class[] = [];
-          classesSnapshot.forEach(docSnap => loadedClasses.push(docSnap.data() as Class));
-
-          const loadedStudents: Student[] = [];
-          studentsSnapshot.forEach(docSnap => loadedStudents.push(docSnap.data() as Student));
-
-          const loadedTimetable: TimetableEntry[] = [];
-          timetableSnapshot.forEach(docSnap => loadedTimetable.push(docSnap.data() as TimetableEntry));
-
-          const loadedAttendance: Attendance[] = [];
-          attendanceSnapshot.forEach(docSnap => loadedAttendance.push(docSnap.data() as Attendance));
-
-          const loadedMarks: Mark[] = [];
-          marksSnapshot.forEach(docSnap => loadedMarks.push(docSnap.data() as Mark));
-
-          const loadedFees: FeeRecord[] = [];
-          feesSnapshot.forEach(docSnap => loadedFees.push(docSnap.data() as FeeRecord));
-
-          const loadedCoordinators: Coordinator[] = [];
-          coordinatorsSnapshot.forEach(docSnap => loadedCoordinators.push(docSnap.data() as Coordinator));
-
-          const loadedFeeStudents: StudentFeeData[] = [];
-          feeDataSnapshot.forEach(docSnap => loadedFeeStudents.push(docSnap.data() as StudentFeeData));
-
-          const loadedAssignments: Assignment[] = [];
-          assignmentsSnapshot.forEach(docSnap => loadedAssignments.push(docSnap.data() as Assignment));
-
-          // Load App Settings
-          const settingsSnap = await getDoc(doc(db, "app_settings", "global"));
-          let loadedSettings: AppSettings | null = null;
-          if (settingsSnap.exists()) {
-            loadedSettings = settingsSnap.data() as AppSettings;
-          }
-
-          const finalTeachers = loadedTeachers.length > 0 ? loadedTeachers : INITIAL_TEACHERS;
+            const finalTeachers = loadedTeachers.length > 0 ? loadedTeachers : INITIAL_TEACHERS;
           const finalClasses = loadedClasses.length > 0 ? loadedClasses : INITIAL_CLASSES;
           const finalStudents = loadedStudents.length > 0 ? loadedStudents : INITIAL_STUDENTS;
           const finalTimetable = loadedTimetable.length > 0 ? loadedTimetable : INITIAL_TIMETABLE;
@@ -817,7 +420,6 @@ export default function App() {
 
           if (loadedCoordinators.length > 0) setCoordinators(loadedCoordinators);
           if (loadedAssignments.length > 0) setAssignments(loadedAssignments);
-          let effectiveFeeStudents: StudentFeeData[] = loadedFeeStudents;
           if (loadedFeeStudents.length > 0) {
             setFeeStudents(loadedFeeStudents);
           } else {
@@ -831,26 +433,26 @@ export default function App() {
               dues: []
             }));
             setFeeStudents(defaultFeeStudents);
-            effectiveFeeStudents = defaultFeeStudents;
           }
           if (loadedSettings) setAppSettings(loadedSettings);
 
-          // Background auto-seed if any collection was empty in Firestore
+          // Background auto-seed if any collection was empty in Supabase
           if (loadedStudents.length === 0) {
-            INITIAL_STUDENTS.forEach(s => setDoc(doc(db, "students", s.id), sanitizeForFirestore(s)).catch(() => {}));
+            INITIAL_STUDENTS.forEach(s => sbQueueWrite("students", String(s.id), s));
           }
           if (loadedClasses.length === 0) {
-            INITIAL_CLASSES.forEach(c => setDoc(doc(db, "classes", c.id), sanitizeForFirestore(c)).catch(() => {}));
+            INITIAL_CLASSES.forEach(c => sbQueueWrite("classes", String(c.id), c));
           }
           if (loadedTeachers.length === 0) {
-            INITIAL_TEACHERS.forEach(t => setDoc(doc(db, "teachers", t.id), sanitizeForFirestore(t)).catch(() => {}));
+            INITIAL_TEACHERS.forEach(t => sbQueueWrite("teachers", String(t.id), t));
           }
           if (loadedAttendance.length === 0) {
-            INITIAL_ATTENDANCE.forEach(a => setDoc(doc(db, "attendance", a.id), sanitizeForFirestore(a)).catch(() => {}));
+            INITIAL_ATTENDANCE.forEach(a => sbQueueWrite("attendance", String(a.id), a));
           }
           if (loadedFees.length === 0) {
-            INITIAL_FEES.forEach(f => setDoc(doc(db, "fees", f.id), sanitizeForFirestore(f)).catch(() => {}));
+            INITIAL_FEES.forEach(f => sbQueueWrite("fees", String(f.id), f));
           }
+          flushSupabase().catch(() => {});
 
           prevTeachers.current = JSON.stringify(finalTeachers);
           prevClasses.current = JSON.stringify(finalClasses);
@@ -859,102 +461,28 @@ export default function App() {
           prevAttendance.current = JSON.stringify(finalAttendance);
           prevMarks.current = JSON.stringify(finalMarks);
           prevFees.current = JSON.stringify(finalFees);
-          prevCoordinators.current = JSON.stringify(loadedCoordinators);
+          prevCoordinators.current = JSON.stringify(loadedCoordinators.length > 0 ? loadedCoordinators : []);
           prevFeeStudents.current = JSON.stringify(loadedFeeStudents.length > 0 ? loadedFeeStudents : []);
           prevAssignments.current = JSON.stringify(loadedAssignments.length > 0 ? loadedAssignments : []);
           if (loadedSettings) prevAppSettings.current = JSON.stringify(loadedSettings);
 
-          // ===== NEON BOOTSTRAP MIRROR — Firestore se load hua poora data Neon Postgres backup mein bhi =====
-          // Yeh fire-and-forget hai; Neon fail ho to app normally chalti rahegi.
-          (async () => {
-            try {
-              if (!(await ensureNeonSchema())) return;
-              const mirrorLists: [string, any[]][] = [
-                ['teachers', finalTeachers],
-                ['classes', finalClasses],
-                ['students', finalStudents],
-                ['timetable', finalTimetable],
-                ['attendance', finalAttendance],
-                ['marks', finalMarks],
-                ['fees', finalFees],
-                ['coordinators', loadedCoordinators],
-                ['fee_data', effectiveFeeStudents],
-                ['assignments', loadedAssignments]
-              ];
-              let total = 0;
-              mirrorLists.forEach(([col, arr]) => {
-                (arr || []).forEach(item => {
-                  if (item?.id !== undefined && item?.id !== null) {
-                    neonQueueWrite(col, String(item.id), item);
-                    total++;
-                  }
-                });
-              });
-              if (loadedSettings) {
-                neonQueueWrite('app_settings', 'global', loadedSettings);
-              }
-              await flushNeon();
-              console.log(`[Neon] Bootstrap mirror complete — ${total} records backed up.`);
-            } catch (e: any) {
-              console.warn('[Neon] bootstrap mirror failed:', e?.message);
-            }
-          })();
+          // localStorage cache bhi refresh
+          safeStorage.setItem('acadamis_teachers', prevTeachers.current);
+          safeStorage.setItem('acadamis_classes', prevClasses.current);
+          safeStorage.setItem('acadamis_students', prevStudents.current);
+          safeStorage.setItem('acadamis_timetable', prevTimetable.current);
+          safeStorage.setItem('acadamis_attendance', prevAttendance.current);
+          safeStorage.setItem('acadamis_marks', prevMarks.current);
+          safeStorage.setItem('acadamis_fees', prevFees.current);
+          safeStorage.setItem('acadamis_coordinators', prevCoordinators.current);
+          safeStorage.setItem('school_fee_data', prevFeeStudents.current);
+          safeStorage.setItem('acadamis_assignments', prevAssignments.current);
         }
         isSyncComplete.current = true;
         setSyncReady(true);
       } catch (err: any) {
-        console.warn("Firestore sync running in background/offline fallback mode:", err?.message);
+        console.warn("Supabase sync running in background/offline fallback mode:", err?.message);
         setSyncError(err?.message || "Offline fallback");
-
-        // ===== NEON FALLBACK — Firebase fail to Neon Postgres se data load karo =====
-        try {
-          const neonData = await loadAllFromNeon();
-          const nStudents = neonData['students'] || [];
-          if (nStudents.length > 0) {
-            console.log("Firebase unavailable — loading from Neon Postgres fallback...");
-            const nTeachers = neonData['teachers'] || [];
-            const nClasses = neonData['classes'] || [];
-            const nTimetable = neonData['timetable'] || [];
-            const nAttendance = neonData['attendance'] || [];
-            const nMarks = neonData['marks'] || [];
-            const nFees = neonData['fees'] || [];
-            const nCoordinators = neonData['coordinators'] || [];
-            const nFeeStudents = neonData['fee_data'] || [];
-            const nAssignments = neonData['assignments'] || [];
-            const nSettings = (neonData['app_settings'] || [])[0];
-
-            if (nTeachers.length > 0) setTeachers(nTeachers);
-            if (nClasses.length > 0) setClasses(nClasses);
-            setStudents(nStudents);
-            if (nTimetable.length > 0) setTimetable(nTimetable);
-            if (nAttendance.length > 0) setAttendance(nAttendance);
-            if (nMarks.length > 0) setMarks(nMarks);
-            if (nFees.length > 0) setFees(nFees);
-            if (nCoordinators.length > 0) setCoordinators(nCoordinators);
-            if (nFeeStudents.length > 0) setFeeStudents(nFeeStudents);
-            if (nAssignments.length > 0) setAssignments(nAssignments);
-            if (nSettings) setAppSettings(nSettings);
-
-            prevTeachers.current = JSON.stringify(nTeachers);
-            prevClasses.current = JSON.stringify(nClasses);
-            prevStudents.current = JSON.stringify(nStudents);
-            prevTimetable.current = JSON.stringify(nTimetable);
-            prevAttendance.current = JSON.stringify(nAttendance);
-            prevMarks.current = JSON.stringify(nMarks);
-            prevFees.current = JSON.stringify(nFees);
-            prevCoordinators.current = JSON.stringify(nCoordinators);
-            prevFeeStudents.current = JSON.stringify(nFeeStudents);
-            prevAssignments.current = JSON.stringify(nAssignments);
-            if (nSettings) prevAppSettings.current = JSON.stringify(nSettings);
-
-            isSyncComplete.current = true;
-            setSyncReady(true);
-            toast.success('Firebase unavailable — data Neon Postgres se load ho gaya ✓');
-            return;
-          }
-        } catch (neonErr: any) {
-          console.warn("Neon fallback load failed:", neonErr?.message);
-        }
 
         setTeachers(prev => prev.length > 0 ? prev : INITIAL_TEACHERS);
         setClasses(prev => prev.length > 0 ? prev : INITIAL_CLASSES);
@@ -969,7 +497,7 @@ export default function App() {
       }
     }
 
-    initFirebaseAndSync();
+    initBackendAndSync();
   }, []);
 
   // --- REALTIME DIFFERENTIAL SYNC ACTIONS ---
@@ -1276,14 +804,12 @@ export default function App() {
 
     const sync = async () => {
       try {
-        await setDoc(doc(db, "app_settings", "global"), sanitizeForFirestore(appSettings));
-        // NEON MIRROR — settings Neon mein bhi (collection 'app_settings', id 'global')
-        neonQueueWrite("app_settings", "global", appSettings);
+        sbQueueWrite("app_settings", "global", appSettings);
+        await flushSupabase();
         prevAppSettings.current = currentStr;
         safeStorage.setItem('acadamis_app_settings', currentStr);
-        bumpSyncMeta(['app_settings']);
       } catch (e) {
-        console.error("Firestore Settings Sync Error:", e);
+        console.error("Supabase Settings Sync Error:", e);
       }
     };
 
@@ -1359,27 +885,13 @@ export default function App() {
     }
   }, [userSession]);
 
-  // --- PERIODIC FIRESTORE SYNC — REMOVED (quota fix) ---
-  // The old 30s full-pull (~750 reads every 30s) and 60s full-push (~750 writes
-  // every 60s) exhausted the Firebase free-tier quota (RESOURCE_EXHAUSTED), after
-  // which ALL new saves failed. Real-time updates are already handled by the
-  // onSnapshot listeners in each dashboard (near-zero quota cost), and local
-  // changes are pushed by the differential batch writer below, which only
-  // writes documents that actually changed. pushLocalToCloud() is kept for the
-  // manual "Force Sync to Cloud" button only.
-
-
-  // NOTE: The automatic 60-second full push was removed (quota fix) — it rewrote
-  // every document (~750 writes/minute) and exhausted the free-tier write quota,
-  // which made ALL saves fail with RESOURCE_EXHAUSTED. Changed documents are
-  // pushed in real time by the differential batch writer, and "Force Sync to
-  // Cloud" (this function) remains available as a manual full backup.
+  // --- FORCE SYNC — manual full upload to Supabase ---
   const pushLocalToCloud = useCallback(async () => {
     if (!userSession) return;
-    
+
     try {
-      console.log("Pushing local data to Firestore...");
-      
+      console.log("Pushing local data to Supabase...");
+
       const uploadConfig: { col: string; data: any[] | any; type: 'list' | 'object'; docId?: string }[] = [
         { col: 'teachers', data: teachers, type: 'list' },
         { col: 'classes', data: classes, type: 'list' },
@@ -1398,31 +910,20 @@ export default function App() {
           const listItems = item.data;
           for (const listItem of listItems) {
             if (listItem && listItem.id) {
-              // sanitizeForFirestore strips 'undefined' values Firestore rejects —
-              // without it a single optional field (email, photo, paidDate...)
-              // failed the ENTIRE push.
-              await setDoc(doc(db, item.col, String(listItem.id)), sanitizeForFirestore(listItem));
-              // NEON MIRROR — full backup mein Neon Postgres mein bhi
-              neonQueueWrite(item.col, String(listItem.id), listItem);
+              sbQueueWrite(item.col, String(listItem.id), listItem);
             }
           }
         } else if (item.type === 'object' && item.docId) {
-          await setDoc(doc(db, item.col, item.docId), sanitizeForFirestore(item.data));
-          // NEON MIRROR — settings bhi
-          neonQueueWrite(item.col, item.docId, item.data);
+          sbQueueWrite(item.col, item.docId, item.data);
         }
       }
-      // Neon queue ko foran flush karo (Force Sync = immediate backup)
-      await flushNeon();
-      
-      console.log("Push to Firestore complete (+ Neon mirror)");
-      // Heartbeat bump — doosri devices (jinke onSnapshot fail hon) 20s ke poll se
-      // yeh change foran pick kar lengi
-      try { await bumpSyncMeta(['teachers','classes','students','timetable','attendance','marks','fees','coordinators','fee_data','assignments']); } catch { /* non-fatal */ }
+      const ok = await flushSupabase();
+      if (!ok) throw new Error("Supabase flush failed");
+
+      console.log("Push to Supabase complete");
     } catch (err) {
-      console.warn("Push to Firestore failed:", err);
+      console.warn("Push to Supabase failed:", err);
       // Rethrow so callers (e.g. the Force Sync button) can surface the failure
-      // instead of showing a false "synced" success message.
       throw err;
     }
   }, [userSession, teachers, classes, students, timetable, attendance, marks, fees, coordinators, feeStudents, appSettings]);
