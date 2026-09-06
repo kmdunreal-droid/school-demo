@@ -22,7 +22,7 @@ import StudentDashboard from './components/StudentDashboard';
 
 import { safeStorage } from './lib/safeStorage';
 import { sanitizeForFirestore } from './lib/firestoreUtils';
-import { neonQueueWrite, neonQueueDelete, loadAllFromNeon, ensureNeonSchema, flushNeon } from './lib/neonSync';
+import { neonQueueWrite, neonQueueDelete, neonHeartbeat, loadAllFromNeon, loadCollectionFromNeon, ensureNeonSchema, flushNeon } from './lib/neonSync';
 
 function safeParse<T>(key: string, fallback: T): T {
   try {
@@ -238,6 +238,8 @@ export default function App() {
     });
     // NEON MIRROR — har write Neon Postgres mein bhi jata hai (backup/fallback)
     neonQueueWrite(col, id, data);
+    // NEON HEARTBEAT — doosri devices ko pata chale (Firebase quota fail par bhi sync ho)
+    neonHeartbeat(deviceIdRef.current);
     flushBatchDebounced();
   };
 
@@ -245,6 +247,8 @@ export default function App() {
     pendingBatch.current.del.push(doc(db, col, id));
     // NEON MIRROR — delete Neon se bhi
     neonQueueDelete(col, id);
+    // NEON HEARTBEAT — delete bhi doosri devices tak pahunche
+    neonHeartbeat(deviceIdRef.current);
     flushBatchDebounced();
   };
 
@@ -256,6 +260,8 @@ export default function App() {
   const deviceIdRef = useRef(Math.random().toString(36).slice(2) + Date.now().toString(36));
   const lastRemoteMeta = useRef(0);   // aakhri heartbeat timestamp jo is device ne dekha
   const lastOwnPush = useRef(0);      // is device ki aakhri push ka timestamp (self-echo skip)
+  const lastNeonMetaTs = useRef(0);   // aakhri NEON heartbeat updatedAt jo is device ne process kiya
+  const lastNeonFullSync = useRef(0); // aakhri NEON full-pull ka timestamp
 
   const bumpSyncMeta = async (cols: string[]) => {
     try {
@@ -431,6 +437,53 @@ export default function App() {
       console.warn('[Sync] remote pull failed:', e?.message);
     }
   }, []); // No state deps — uses only stable Firestore calls
+// --- NEON FULL PULL — poori state Neon Postgres se update karo (Firebase quota fail par cross-device sync) ---
+  // Har collection ko prevRef se compare karke hi update karte hain — loop nahi banta.
+  const pullFromNeonFull = useCallback(async (reason: string) => {
+    try {
+      const neonData = await loadAllFromNeon();
+      const applyList = <T extends { id: any }>(
+        list: any[] | undefined,
+        prevRef: React.MutableRefObject<string>,
+        setter: (v: T[]) => void,
+        storeKey: string
+      ) => {
+        if (!list || list.length === 0) return;
+        const str = JSON.stringify(list);
+        if (str !== prevRef.current) {
+          setter(list as T[]);
+          prevRef.current = str;
+          safeStorage.setItem(storeKey, str);
+        }
+      };
+      applyList(neonData['students'], prevStudents, setStudents, 'acadamis_students');
+      applyList(neonData['teachers'], prevTeachers, setTeachers, 'acadamis_teachers');
+      applyList(neonData['classes'], prevClasses, setClasses, 'acadamis_classes');
+      applyList(neonData['timetable'], prevTimetable, setTimetable, 'acadamis_timetable');
+      applyList(neonData['attendance'], prevAttendance, setAttendance, 'acadamis_attendance');
+      applyList(neonData['marks'], prevMarks, setMarks, 'acadamis_marks');
+      applyList(neonData['fees'], prevFees, setFees, 'acadamis_fees');
+      applyList(neonData['coordinators'], prevCoordinators, setCoordinators, 'acadamis_coordinators');
+      applyList(neonData['fee_data'], prevFeeStudents, setFeeStudents, 'school_fee_data');
+      applyList(neonData['assignments'], prevAssignments, setAssignments, 'acadamis_assignments');
+      const settingsArr = neonData['app_settings'] || [];
+      if (settingsArr.length > 0) {
+        const s = settingsArr[0] as AppSettings;
+        const sStr = JSON.stringify(s);
+        if (sStr !== prevAppSettings.current) {
+          setAppSettings(s);
+          prevAppSettings.current = sStr;
+          safeStorage.setItem('acadamis_app_settings', sStr);
+        }
+      }
+      console.log(`[Sync:Neon] full pull applied (${reason})`);
+    } catch (e: any) {
+      console.warn('[Sync:Neon] full pull failed:', e?.message);
+    }
+  }, []); // No state deps — only loads from Neon and sets state
+
+  // Keep ref in sync so heartbeat poll always uses latest version
+  useEffect(() => { pullRemoteRef.current = pullRemoteData; }, [pullRemoteData]);
 
   // Keep ref in sync so heartbeat poll always uses latest version
   useEffect(() => { pullRemoteRef.current = pullRemoteData; }, [pullRemoteData]);
@@ -466,6 +519,32 @@ export default function App() {
         }
       } catch (e: any) {
         console.warn('[Sync] heartbeat poll failed:', e?.message);
+      }
+
+      // ===== NEON CROSS-DEVICE CHECK =====
+      // Firebase write quota fail hone par bhi doosri devices ki changes Neon se mil jayen.
+      try {
+        // 1) Neon heartbeat check — doosri device ne data likha?
+        const metaList = await loadCollectionFromNeon('sync_meta');
+        const meta = (metaList || [])[0] as any;
+        const nu = Number(meta?.updatedAt) || 0;
+        const nd = String(meta?.byDevice || '');
+        if (nu > 0 && nu !== lastNeonMetaTs.current && nd !== deviceIdRef.current) {
+          lastNeonMetaTs.current = nu;
+          lastNeonFullSync.current = Date.now();
+          console.log('[Sync:Neon] remote heartbeat detected — pulling full data from Neon');
+          await pullFromNeonFull('neon-heartbeat');
+        } else if (nu > lastNeonMetaTs.current) {
+          lastNeonMetaTs.current = nu;
+        }
+        // 2) PERIODIC NEON FULL-SYNC — har 60s (Firestore periodic miss ho to bhi sync ho)
+        const nNow = Date.now();
+        if (nNow - lastNeonFullSync.current >= 60000) {
+          lastNeonFullSync.current = nNow;
+          await pullFromNeonFull('neon-periodic-60s');
+        }
+      } catch (e: any) {
+        console.warn('[Sync] Neon poll failed, will retry next tick:', e?.message);
       }
     };
     const iv = setInterval(checkRemote, 20000);

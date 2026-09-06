@@ -75,6 +75,15 @@ export function neonQueueDelete(col: string, id: string) {
   scheduleNeonFlush();
 }
 
+/**
+ * NEON HEARTBEAT — cross-device sync trigger.
+ * Har local write par bheja jata hai taake doosri devices ko pata chale ke data badla.
+ * (Firebase write quota fail hone par bhi Neon kaam karta hai.)
+ */
+export function neonHeartbeat(deviceId: string) {
+  neonQueueWrite('sync_meta', 'global', { updatedAt: Date.now(), byDevice: deviceId });
+}
+
 function scheduleNeonFlush() {
   if (neonTimer) clearTimeout(neonTimer);
   neonTimer = setTimeout(() => { flushNeon(); }, 900);
