@@ -1139,14 +1139,23 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
   // Delete EVERY payment recorded for a given month (fee engine + legacy ledger stay in sync)
   const deleteMonthPayments = (studentId: string, month: string, year: number) => {
     const monthKey = `${month} ${year}`;
-    if (!window.confirm(`Delete all ${monthKey} fee payments for this student?`)) return;
+    if (!window.confirm(`Delete all ${monthKey} fee payments & dues for this student?`)) return;
     const monthIdx = MONTH_ALIAS[String(month).toLowerCase()] ?? -1;
     setFeeStudents(prev => prev.map(fs => {
       if (String(fs.id) === String(studentId)) {
-        return { ...fs, payments: fs.payments.filter(p => {
-          const key = parseMonthKey(p.month, Number(p.year) || year);
-          return !(key.idx === monthIdx && key.year === Number(year));
-        }) };
+        return {
+          ...fs,
+          payments: fs.payments.filter(p => {
+            const key = parseMonthKey(p.month, Number(p.year) || year);
+            return !(key.idx === monthIdx && key.year === Number(year));
+          }),
+          // FIX: dues bhi delete karo (Paper Fund/Exam Fee etc. jo is month par lage the) —
+          // warna month delete ke baad "Paper Fund (Pending)" wapas dikhta rehta tha
+          dues: fs.dues.filter(d => {
+            const key = parseMonthKey(d.month, d.year || year);
+            return !(key.idx === monthIdx && key.year === Number(year));
+          }),
+        };
       }
       return fs;
     }));
@@ -4334,6 +4343,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                                   return (
                                     <div key={student.id} className={`bg-white transition-all ${isExpanded ? 'bg-indigo-50/10' : ''}`}>
+                                      <HoldActionWrapper
+                                        onEdit={() => openEditModal('student', String(student.id))}
+                                        onDelete={() => handleDeleteStudent(String(student.id))}
+                                        onDetail={() => setStudentDetailModal({ isOpen: true, student })}
+                                      >
                                       <div
                                         onClick={() => setExpandedStudentFeeId(isExpanded ? null : String(student.id))}
                                         className="p-4 flex items-center justify-between gap-3 cursor-pointer active:bg-slate-50"
@@ -4353,9 +4367,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                           </div>
                                         </div>
                                         <ChevronDown size={14} className={`text-slate-300 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`} />
-                                      </div>
+                                        </div>
+                                        </HoldActionWrapper>
 
-                                      {isExpanded && (
+                                        {isExpanded && (
                                         <div className="px-4 pb-4 animate-in fade-in slide-in-from-top-2 duration-300">
                                           <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-lg space-y-4">
                                             <div className="grid grid-cols-2 gap-2">
@@ -10527,8 +10542,13 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
           const { m, totalPaid, extraByType, pendingByType, extraPending, totalRemaining, isClear } = s;
           const isSelected = selectedMonth === m;
           return (
+            <HoldActionWrapper
+              onDetail={() => onSelectMonth?.(isSelected ? null : m)}
+              onEdit={() => onCollect(m, totalRemaining)}
+              onDelete={() => onDeleteMonth(m, year)}
+              className="rounded-xl"
+            >
             <div
-              key={m}
               onClick={() => onSelectMonth?.(isSelected ? null : m)}
               title={`Click to ${isSelected ? 'hide' : 'view'} ${m} ${year} history`}
               className={`p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition-all select-none active:scale-[0.98] ${isClear ? 'bg-emerald-50/60 border-emerald-100' : totalPaid > 0 ? 'bg-amber-50/60 border-amber-100' : 'bg-slate-50 border-slate-100'} ${isSelected ? 'ring-2 ring-indigo-400 border-indigo-300 shadow-md' : 'hover:border-slate-300'}`}
@@ -10575,6 +10595,7 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
                 )}
               </div>
             </div>
+            </HoldActionWrapper>
           );
         })}
       </div>
