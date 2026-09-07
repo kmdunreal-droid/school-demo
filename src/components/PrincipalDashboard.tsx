@@ -1573,6 +1573,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
   const [resultsClassFilter, setResultsClassFilter] = useState<string>('all');
   const [resultsExamDraft, setResultsExamDraft] = useState<string>('1st Term');
   const [resultsExam, setResultsExam] = useState<string>('');
+  const [openExamChip, setOpenExamChip] = useState<string | null>(null);
   const [resultWAModal, setResultWAModal] = useState<{ isOpen: boolean; exam: string }>({ isOpen: false, exam: '' });
   const [resultWAClassFilter, setResultWAClassFilter] = useState<string>('all');
   const [sendingResultIds, setSendingResultIds] = useState<Set<string>>(new Set());
@@ -3147,7 +3148,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       const isExpanded = !!expandedTeachers[t.id];
                       return (
                         <div key={t.id} className="bg-white border border-slate-200 overflow-hidden hover:border-indigo-300 transition-all shadow-xs group">
-                          <div 
+                          <HoldActionWrapper
+                            onEdit={() => openEditModal('teacher', t.id)}
+                            onDelete={() => handleDeleteTeacher(t.id)}
+                          >
+                          <div
                             onClick={() => toggleTeacherExpanded(t.id)}
                             className="p-5 flex items-center justify-between cursor-pointer group-hover:bg-slate-50/50"
                           >
@@ -3159,6 +3164,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             </div>
                             <ChevronDown className={`text-slate-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                           </div>
+                          </HoldActionWrapper>
 
                           {isExpanded && (
                             <div className="px-5 pb-5 pt-4 border-t border-slate-100 bg-slate-50/50 space-y-4 animate-fade-in font-sans">
@@ -3353,7 +3359,15 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <div key={c.id} className="bg-white border border-slate-200 p-6 flex flex-col items-start gap-5 hover:shadow-xl transition-all font-sans relative overflow-hidden group">
                           <div className="absolute top-0 right-0 w-16 h-16 bg-slate-50 -mr-8 -mt-8 rotate-45 group-hover:bg-indigo-50 transition-colors"></div>
                           
-                          <div 
+                          <HoldActionWrapper
+                            onEdit={() => openEditModal('class', c.id)}
+                            onDelete={() => handleDeleteClass(c.id)}
+                            onDetail={() => {
+                              setSelectedClassForDetails(c);
+                              setIsClassDetailModalOpen(true);
+                            }}
+                          >
+                          <div
                             onClick={() => {
                               setSelectedClassForDetails(c);
                               setIsClassDetailModalOpen(true);
@@ -3388,6 +3402,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               )}
                             </div>
                           </div>
+                          </HoldActionWrapper>
 
                           <div className="flex gap-2 w-full pt-4 border-t border-slate-50 relative z-10">
                             <button
@@ -3446,7 +3461,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       const isExpanded = !!expandedCoordinators[c.id];
                       return (
                         <div key={c.id} className="bg-white border border-slate-200 overflow-hidden hover:border-indigo-300 transition-all shadow-xs group">
-                          <div 
+                          <HoldActionWrapper
+                            onEdit={() => openEditModal('coordinator', c.id)}
+                            onDelete={() => handleDeleteCoordinator(c.id)}
+                          >
+                          <div
                             onClick={() => toggleCoordinatorExpanded(c.id)}
                             className="p-5 flex items-center justify-between cursor-pointer group-hover:bg-slate-50/50"
                           >
@@ -3458,6 +3477,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             </div>
                             <ChevronDown className={`text-slate-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                           </div>
+                          </HoldActionWrapper>
 
                           {isExpanded && (
                             <div className="px-5 pb-5 pt-4 border-t border-slate-100 bg-slate-50/50 space-y-4 animate-fade-in font-sans">
@@ -5274,14 +5294,37 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         </div>
                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Click to track</span>
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-2 items-start">
                         {availableExamTypes.map(tn => {
                           const cnt = students.filter(s => marks.some(m => String(m.studentId) === String(s.id) && (m.examType || '').trim().toLowerCase() === tn.trim().toLowerCase())).length;
+                          const isOpen = openExamChip === tn;
+                          const examStudents = students
+                            .filter(s => marks.some(m => String(m.studentId) === String(s.id) && (m.examType || '').trim().toLowerCase() === tn.trim().toLowerCase()))
+                            .sort((a, b) => String(a.name).localeCompare(String(b.name)));
                           return (
-                            <button key={tn} type="button" onClick={() => { setResultsExamDraft(tn); setResultsExam(tn); toast.success('Tracking: ' + tn); }} className="text-left bg-violet-50 border border-violet-100 hover:bg-violet-100 text-violet-800 text-xs font-bold px-3 py-2 rounded-xl flex flex-col gap-0.5">
-                              <span>{tn}</span>
-                              <span className="text-[10px] font-semibold text-violet-500">{cnt} students</span>
-                            </button>
+                            <div key={tn} className="flex flex-col gap-1 max-w-full">
+                              <button type="button" onClick={() => { setResultsExamDraft(tn); setResultsExam(tn); setOpenExamChip(isOpen ? null : tn); }} className="text-left bg-violet-50 border border-violet-100 hover:bg-violet-100 text-violet-800 text-xs font-bold px-3 py-2 rounded-xl flex flex-col gap-0.5 cursor-pointer">
+                                <span>{tn}</span>
+                                <span className="text-[10px] font-semibold text-violet-500">{cnt} students {isOpen ? '▲' : '▼'}</span>
+                              </button>
+                              {isOpen && (
+                                <div className="bg-white border border-violet-100 rounded-xl p-2 max-h-44 overflow-y-auto custom-scrollbar space-y-1 shadow-sm min-w-[180px]">
+                                  {examStudents.length === 0 ? (
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase px-1">No marks yet</p>
+                                  ) : examStudents.map(s => {
+                                    const sms = marks.filter(m => String(m.studentId) === String(s.id) && (m.examType || '').trim().toLowerCase() === tn.trim().toLowerCase());
+                                    const tot = sms.reduce((a, m) => a + (Number(m.marksObtained) || 0), 0);
+                                    const mx = sms.reduce((a, m) => a + (Number(m.maxMarks) || 0), 0);
+                                    return (
+                                      <div key={s.id} className="flex items-center justify-between gap-2 text-[10px] font-bold text-slate-600 px-1">
+                                        <span className="truncate">{s.name} <span className="text-slate-300 font-semibold">· Roll #{s.rollNumber || '000'}</span></span>
+                                        <span className="text-indigo-600 font-black shrink-0">{tot}/{mx}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           );
                         })}
                       </div>

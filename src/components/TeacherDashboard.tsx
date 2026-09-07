@@ -11,6 +11,7 @@ import { getPeriodStatus, getStatusColor } from '../lib/periodUtils';
 import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, ExamType, UserSession, FeeRecord, DayOfWeek, Assignment, getStudentPhoto } from '../types';
 import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
 import { listChanged } from '../lib/dataUtils';
+import { HoldActionWrapper } from './HoldActionWrapper';
 
 interface TeacherDashboardProps {
   userSession: UserSession;
@@ -1003,9 +1004,8 @@ export default function TeacherDashboard({
             <div className="mb-1">
               <img src="/logo.png" alt="NSB1 Logo" className="h-14 w-auto object-contain" referrerPolicy="no-referrer" />
             </div>
-            <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="md:hidden flex items-center justify-center gap-1 px-2.5 h-9 rounded-lg bg-rose-500 text-white hover:bg-rose-600 shadow-md transition-colors">
+            <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="md:hidden flex items-center justify-center px-2 h-9 rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-50 transition-colors">
               <X size={18} />
-              <span className="text-xs font-black uppercase tracking-wider">Exit</span>
             </button>
           </div>
           <div className="text-center w-full">
@@ -2711,6 +2711,60 @@ export default function TeacherDashboard({
                     </div>
                   </div>
                 </div>
+
+                {/* Saved Exams — hold karke Edit (roster reload) ya Delete (sary marks remove) */}
+                {(() => {
+                  const savedExams: { key: string; exam: string; subject: string; classId: string; count: number }[] = [];
+                  const seen = new Set<string>();
+                  marks.forEach(m => {
+                    if (!m.examType || !m.subject) return;
+                    const st = students.find(s => String(s.id) === String(m.studentId));
+                    if (!st) return;
+                    const key = `${m.examType}__${m.subject}__${st.classId}`;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    const count = marks.filter(x => (x.examType || '') === m.examType && (x.subject || '').toLowerCase() === (m.subject || '').toLowerCase() && students.some(s => String(s.id) === String(x.studentId) && s.classId === st.classId)).length;
+                    savedExams.push({ key, exam: m.examType, subject: m.subject, classId: st.classId, count });
+                  });
+                  if (savedExams.length === 0) return null;
+                  return (
+                    <div className="bg-white border border-slate-200 rounded-2xl p-4 mb-4 space-y-2">
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                        <Award size={12} className="text-indigo-500" /> Saved Exams — hold karke Edit / Delete karein
+                      </h4>
+                      {savedExams.map(se => {
+                        const cls = classes.find(c => c.id === se.classId);
+                        return (
+                          <HoldActionWrapper
+                            key={se.key}
+                            onEdit={() => {
+                              handleEnterMarksTab(se.classId, se.subject, se.exam as ExamType);
+                              setExamNameDraft(se.exam);
+                              toast.success(`Editing: ${se.exam} · ${se.subject} — roster loaded with existing marks`);
+                            }}
+                            onDelete={() => {
+                              if (!window.confirm(`Delete ALL marks for "${se.exam} · ${se.subject}"?`)) return;
+                              const removed = marks.filter(x => (x.examType || '') === se.exam && (x.subject || '').toLowerCase() === se.subject.toLowerCase() && students.some(s => String(s.id) === String(x.studentId) && s.classId === se.classId));
+                              if (removed.length === 0) { toast.error('No marks found to delete.'); return; }
+                              setMarks(prev => prev.filter(m => !removed.includes(m)));
+                              syncMarksToFirestore(removed, []);
+                              toast.success(`${removed.length} marks deleted.`);
+                            }}
+                            className="rounded-xl border border-slate-100"
+                          >
+                            <div className="px-3 py-2.5 flex items-center justify-between gap-2 cursor-pointer">
+                              <div className="min-w-0">
+                                <p className="text-xs font-black text-slate-800 truncate">{se.exam}</p>
+                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider truncate">{se.subject} · {cls ? `Class ${cls.className}${cls.section ? '-' + cls.section : ''}` : 'Class'}</p>
+                              </div>
+                              <span className="text-[10px] font-black text-indigo-600 shrink-0">{se.count} marks</span>
+                            </div>
+                          </HoldActionWrapper>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
 
                 {/* Bulk Marks Table */}
                 {(() => {
