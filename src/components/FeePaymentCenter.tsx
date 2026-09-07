@@ -20,8 +20,8 @@ export const parseMonthKey = (raw: unknown, fallbackYear: number): { idx: number
   return { idx: idx === undefined ? -1 : idx, year: m[2] ? Number(m[2]) : fallbackYear };
 };
 
-const TUITION_FEE_TYPES = /^(tuition|school|monthly)\s*fee$/i;
-const isTuitionFeeType = (t: string) => TUITION_FEE_TYPES.test(String(t || '').trim()) || /school\s*fee/i.test(String(t || ''));
+const TUITION_FEE_TYPES = /^(tuition|school|monthly)\s*(nsb\s*)?fee$/i;
+const isTuitionFeeType = (t: string) => TUITION_FEE_TYPES.test(String(t || '').trim()) || /school\s*(nsb\s*)?fee/i.test(String(t || ''));
 
 const PAYMENT_METHODS = ['Cash', 'Bank Transfer', 'JazzCash', 'EasyPaisa', 'Online'];
 
@@ -146,7 +146,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
     setMethod('Cash');
   };
   const openAllPanel = () => {
-    if (!(tuitionPendingTotal > 0)) { toast.info('Koi tuition pending nahi hai - sab clear hai'); return; }
+    if (!(tuitionPendingTotal > 0)) { toast.info('No tuition pending — all clear'); return; }
     setPanel({ kind: 'all', key: 'all', remaining: tuitionPendingTotal });
     setAmount(String(tuitionPendingTotal));
     setMethod('Cash');
@@ -414,7 +414,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         {recentPayments.map(p => (
                           <div key={p.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
                             <div className="min-w-0">
-                              <span className="text-[10px] font-black text-slate-700 uppercase tracking-wide">{p.feeType || 'Tuition Fee'}</span>
+                              <span className="text-[10px] font-black text-slate-700 uppercase tracking-wide">{p.feeType || 'School NSB Fee'}</span>
                               <span className="text-[9px] font-bold text-slate-400 uppercase block">{p.month} {Number(p.year) || year} - {p.date}</span>
                             </div>
                             <span className="text-xs font-black text-emerald-600 shrink-0">PKR {Number(p.amount || 0).toLocaleString()}</span>

@@ -166,7 +166,7 @@ export default function TeacherDashboard({
   const [showAddFeeModal, setShowAddFeeModal] = useState(false);
   const [newFeeStudentId, setNewFeeStudentId] = useState('');
   const [newFeeAmount, setNewFeeAmount] = useState('');
-  const [newFeeType, setNewFeeType] = useState('Tuition Fee');
+  const [newFeeType, setNewFeeType] = useState('School NSB Fee');
   const [newFeeMonth, setNewFeeMonth] = useState('June 2026');
   const [amountCollected, setAmountCollected] = useState('');
 
@@ -2712,7 +2712,7 @@ export default function TeacherDashboard({
                   </div>
                 </div>
 
-                {/* Saved Exams — hold karke Edit (roster reload) ya Delete (sary marks remove) */}
+                {/* Saved Exams — long-press to Edit (roster reload) or Delete (removes all marks) */}
                 {(() => {
                   const savedExams: { key: string; exam: string; subject: string; classId: string; count: number }[] = [];
                   const seen = new Set<string>();
@@ -2730,7 +2730,7 @@ export default function TeacherDashboard({
                   return (
                     <div className="bg-white border border-slate-200 rounded-2xl p-4 mb-4 space-y-2">
                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                        <Award size={12} className="text-indigo-500" /> Saved Exams — hold karke Edit / Delete karein
+                        <Award size={12} className="text-indigo-500" /> Saved Exams — long-press to Edit / Delete
                       </h4>
                       {savedExams.map(se => {
                         const cls = classes.find(c => c.id === se.classId);

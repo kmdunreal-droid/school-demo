@@ -2959,21 +2959,30 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 ? Math.round((attendance.filter(a => a.status === 'present').length / attendance.length) * 100) + '%'
                 : '—';
 
+              // Month progress (collected vs due — progress bars ke liye)
+              const monthDueTotal = totalCollectedMonth + totalPendingMonth;
+              const monthProgress = monthDueTotal > 0 ? Math.round((totalCollectedMonth / monthDueTotal) * 100) : 0;
+
               return (
                 <div className="space-y-8">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-14 animate-fade-in pt-8 border-t border-slate-100">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6 animate-fade-in pt-8 border-t border-slate-100">
                     
                     {[
-                      { label: 'Teachers', val: teachers.length, color: 'text-blue-600', bg: 'bg-blue-50/50' },
-                      { label: 'Students', val: students.length, color: 'text-emerald-600', bg: 'bg-emerald-50/50' },
-                      { label: 'Classes', val: classes.length, color: 'text-amber-600', bg: 'bg-amber-50/50' },
-                      { label: 'Attendance Average', val: attendanceAvg, color: 'text-indigo-600', bg: 'bg-indigo-50/50' },
-                      { label: 'Fee Paid Students', val: paidStudentsCount, color: 'text-violet-600', bg: 'bg-violet-50/50' },
-                      ...(userSession.role === 'coordinator' ? [{ label: 'Fee Pending Students', val: pendingStudentsCount, color: 'text-rose-600', bg: 'bg-rose-50/50' }] : []),
+                      { label: 'Today Collection', val: `PKR ${todaysCollection.toLocaleString()}`, icon: <CreditCard size={16} className="text-violet-600" />, chip: 'bg-violet-50 border-violet-100' },
+                      { label: 'Today Attendance', val: `${todayPresent}/${todayAttendance.length}`, icon: <CheckCircle2 size={16} className="text-emerald-600" />, chip: 'bg-emerald-50 border-emerald-100' },
+                      { label: 'Fee Paid Students', val: paidStudentsCount, icon: <User size={16} className="text-blue-600" />, chip: 'bg-blue-50 border-blue-100' },
+                      { label: 'Pending Students', val: pendingStudentsCount, icon: <AlertCircle size={16} className="text-rose-600" />, chip: 'bg-rose-50 border-rose-100' },
+                      { label: 'Teachers', val: teachers.length, icon: <Users size={16} className="text-indigo-600" />, chip: 'bg-indigo-50 border-indigo-100' },
+                      { label: 'Students', val: students.length, icon: <Users size={16} className="text-teal-600" />, chip: 'bg-teal-50 border-teal-100' },
+                      { label: 'Classes', val: classes.length, icon: <Award size={16} className="text-amber-600" />, chip: 'bg-amber-50 border-amber-100' },
+                      { label: 'Attendance Average', val: attendanceAvg, icon: <CheckCircle2 size={16} className="text-sky-600" />, chip: 'bg-sky-50 border-sky-100' },
                     ].map(stat => (
-                      <div key={stat.label} className={`group p-6 border border-transparent hover:border-slate-100 transition-all ${stat.bg}`}>
-                        <span className={`block text-xs font-black uppercase tracking-[0.3em] mb-3 ${stat.color}`}>{stat.label}</span>
-                        <span className="text-2xl md:text-3xl font-light tracking-tighter text-slate-900 block tabular-nums">{stat.val}</span>
+                      <div key={stat.label} className="p-4 md:p-5 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                        <div className="flex items-center gap-2.5 mb-2.5">
+                          <div className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 ${stat.chip}`}>{stat.icon}</div>
+                          <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 leading-tight">{stat.label}</span>
+                        </div>
+                        <span className="text-xl md:text-2xl font-black tracking-tighter text-slate-900 block tabular-nums">{stat.val}</span>
                       </div>
                     ))}
                   </div>
@@ -2982,33 +2991,53 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {/* Coordinator: Fee/dues cards nahi dikhenge, sirf student count */}
                   {userSession.role !== 'coordinator' && (
                     <>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-8 animate-fade-in">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 animate-fade-in">
                         <button
                           onClick={() => openFeePaymentCenter()}
-                          className="p-6 bg-rose-50/50 border border-rose-100 hover:border-rose-400 hover:bg-rose-50 text-left transition-all cursor-pointer group"
-                          title="Click karein — Fee Payment Center khulega"
+                          className="p-5 bg-white border border-rose-100 rounded-2xl shadow-sm hover:shadow-lg hover:border-rose-300 hover:-translate-y-0.5 text-left transition-all cursor-pointer group"
+                          title="Click — opens Fee Payment Center"
                         >
-                          <span className="text-xs font-black uppercase tracking-[0.3em] mb-3 text-rose-600 block">Remaining Fee</span>
-                          <span className="text-2xl md:text-3xl font-light tracking-tighter text-slate-900 block tabular-nums">{totalPendingAll.toLocaleString()}</span>
-                          <span className="text-[10px] font-black text-rose-500 uppercase tracking-widest mt-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">Pay Now <ArrowRight size={11} /></span>
+                          <div className="flex items-center gap-3 mb-3">
+                            <div className="w-10 h-10 rounded-xl bg-rose-50 border border-rose-100 flex items-center justify-center shrink-0"><AlertCircle size={18} className="text-rose-500" /></div>
+                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-rose-500 leading-tight">Remaining Fee<br />(All Months)</span>
+                          </div>
+                          <span className="text-2xl md:text-3xl font-black tracking-tighter text-slate-900 block tabular-nums">{totalPendingAll.toLocaleString()}</span>
+                          <span className="text-[10px] font-black text-rose-500 uppercase tracking-widest mt-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">Pay Now <ArrowRight size={11} /></span>
                         </button>
-                        <div className="p-6 bg-violet-50/50 border border-violet-100">
-                          <span className="text-xs font-black uppercase tracking-[0.3em] mb-3 text-violet-600 block">{currentMonthName} Fee · Total Paid</span>
-                          <span className="text-2xl md:text-3xl font-light tracking-tighter text-slate-900 block tabular-nums">{totalCollectedMonth.toLocaleString()}</span>
-                          {todaysCollection > 0 && (
-                            <span className="text-[10px] font-black text-violet-500 uppercase tracking-widest mt-2 block">Aaj: PKR {todaysCollection.toLocaleString()}</span>
-                          )}
-                        </div>
-                        <div className="p-6 bg-amber-50/50 border border-amber-100">
-                          <span className="text-xs font-black uppercase tracking-[0.3em] mb-3 text-amber-600 block">{currentMonthName} Fee · Remaining</span>
-                          <span className="text-2xl md:text-3xl font-light tracking-tighter text-slate-900 block tabular-nums">{totalPendingMonth.toLocaleString()}</span>
-                        </div>
+                        <button
+                          onClick={() => { setQuickCollectStudentId(''); setShowQuickCollectModal(true); }}
+                          className="p-5 bg-white border border-violet-100 rounded-2xl shadow-sm hover:shadow-lg hover:border-violet-300 hover:-translate-y-0.5 text-left transition-all cursor-pointer group"
+                          title="Click — Collect Fee + Receipt form opens"
+                        >
+                          <div className="flex items-center gap-3 mb-3">
+                            <div className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-100 flex items-center justify-center shrink-0"><CreditCard size={18} className="text-violet-500" /></div>
+                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-500 leading-tight">{currentMonthName} Fee<br />Total Paid</span>
+                          </div>
+                          <span className="text-2xl md:text-3xl font-black tracking-tighter text-slate-900 block tabular-nums">{totalCollectedMonth.toLocaleString()}</span>
+                          <div className="mt-3 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-violet-500 transition-all duration-500" style={{ width: `${monthProgress}%` }}></div>
+                          </div>
+                          <span className="text-[10px] font-black text-violet-500 uppercase tracking-widest mt-2 block">{monthProgress}% collected{todaysCollection > 0 ? ` · Today: PKR ${todaysCollection.toLocaleString()}` : ''}</span>
+                        </button>
+                        <button
+                          onClick={() => openFeePaymentCenter()}
+                          className="p-5 bg-white border border-amber-100 rounded-2xl shadow-sm hover:shadow-lg hover:border-amber-300 hover:-translate-y-0.5 text-left transition-all cursor-pointer group"
+                          title="Click — opens Fee Payment Center"
+                        >
+                          <div className="flex items-center gap-3 mb-3">
+                            <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center shrink-0"><AlertCircle size={18} className="text-amber-500" /></div>
+                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500 leading-tight">{currentMonthName} Fee<br />Remaining</span>
+                          </div>
+                          <span className="text-2xl md:text-3xl font-black tracking-tighter text-slate-900 block tabular-nums">{totalPendingMonth.toLocaleString()}</span>
+                          <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest mt-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">Collect Now <ArrowRight size={11} /></span>
+                        </button>
                       </div>
 
-                      {/* FEE PAYMENT CENTER — prominent CTA banner */}
+                      {/* CTA BUTTONS — side by side */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
                       <button
                         onClick={() => openFeePaymentCenter()}
-                        className="w-full mt-4 p-5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
+                        className="w-full p-5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
                       >
                         <div className="flex items-center gap-4 min-w-0">
                           <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
@@ -3016,7 +3045,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           </div>
                           <div className="min-w-0">
                             <p className="text-sm font-black uppercase tracking-widest">Fee Payment Center</p>
-                            <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest truncate">Month-wise Fee • Paper Fund • Other Funds • Dues — Sab kuch ek jagah se pay karein</p>
+                            <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest truncate">Month-wise Fee • Paper Fund • Other Funds • Dues — Everything in one place</p>
                           </div>
                         </div>
                         <span className="px-4 py-2 bg-white text-emerald-700 text-[10px] font-black uppercase tracking-widest rounded-xl shrink-0 group-hover:scale-105 transition-transform">Open <ArrowRight size={12} className="inline ml-1" /></span>
@@ -3025,19 +3054,20 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       {/* ⚡ QUICK COLLECT — form dashboard se attached */}
                       <button
                         onClick={() => { setQuickCollectStudentId(''); setShowQuickCollectModal(true); }}
-                        className="w-full mt-2 p-4 bg-emerald-600 hover:bg-emerald-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
+                        className="w-full p-5 bg-emerald-600 hover:bg-emerald-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
                       >
                         <div className="flex items-center gap-4 min-w-0">
-                          <div className="w-11 h-11 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-                            <CheckCircle2 size={22} />
+                          <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                            <CheckCircle2 size={24} />
                           </div>
                           <div className="min-w-0">
                             <p className="text-sm font-black uppercase tracking-widest">⚡ Collect Fee + Receipt</p>
-                            <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest truncate">Student chuno — School NSB Fee / Dues turant collect karein</p>
+                            <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest truncate">Pick a student — instantly collect School NSB Fee / Dues</p>
                           </div>
                         </div>
                         <span className="px-4 py-2 bg-white text-emerald-700 text-[10px] font-black uppercase tracking-widest rounded-xl shrink-0 group-hover:scale-105 transition-transform">Open <ArrowRight size={12} className="inline ml-1" /></span>
                       </button>
+                      </div>
 
                       {/* Extra Charges & Dues Summary Cards — HIDDEN for cleaner dashboard */}
                     </>
@@ -9693,7 +9723,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="w-16 h-16 mx-auto rounded-full bg-emerald-100 flex items-center justify-center">
                       <CheckCircle2 size={36} className="text-emerald-600" />
                     </div>
-                    <h3 className="mt-3 text-lg font-black uppercase tracking-tight text-slate-900">Fee Collect Ho Gayi ✓</h3>
+                    <h3 className="mt-3 text-lg font-black uppercase tracking-tight text-slate-900">Fee Collected ✓</h3>
                     <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">Receipt #{qcReceipt.receiptId} • {qcReceipt.date}</p>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2">
@@ -9718,7 +9748,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       onClick={() => { setQcReceipt(null); setQuickCollectStudentId(''); setQuickCollectAmount(''); setCollectDuesList({}); setQcSearch(''); }}
                       className="py-3.5 bg-indigo-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-indigo-700 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
                     >
-                      <Plus size={14} /> Naya Student
+                      <Plus size={14} /> New Student
                     </button>
                   </div>
                   <button
@@ -9764,13 +9794,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <input
                           value={qcSearch}
                           onChange={(e) => setQcSearch(e.target.value)}
-                          placeholder="Naam ya Roll # likhein..."
+                          placeholder="Type name or roll #..."
                           className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-800 outline-none focus:border-emerald-600"
                         />
                         {q !== '' && (
                           <div className="mt-1.5 bg-white border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100 max-h-56 overflow-y-auto custom-scrollbar shadow-lg">
                             {matches.length === 0 ? (
-                              <p className="p-3 text-xs font-bold text-slate-400 uppercase">Koi student nahi mila</p>
+                              <p className="p-3 text-xs font-bold text-slate-400 uppercase">No student found</p>
                             ) : matches.map(s => {
                               const fSt = feeStudents.find(fs => String(fs.id) === String(s.id));
                               const dCount = (fSt?.dues || []).filter(d => d.status !== 'waived' && getDueRemaining(d) > 0).length;
@@ -9830,7 +9860,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
                         <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 flex items-center gap-1.5">
-                          <AlertCircle size={12} /> Pending Dues — Tap Karke Select Karein
+                          <AlertCircle size={12} /> Pending Dues — Tap to Select
                         </p>
                         {pendingDuesList.length > 0 && (
                           <button
@@ -9887,10 +9917,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     );
                   })()}
 
-                      {/* Monthly School NSB Fee — LAZMI (hamesha visible, optional button removed) */}
+                      {/* Monthly School NSB Fee — REQUIRED (always visible) */}
                       <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-100">
                         <span className="text-[10px] font-black text-indigo-700 uppercase tracking-widest flex items-center gap-1.5">
-                          <CreditCard size={12} /> Monthly School NSB Fee — Lazmi
+                          <CreditCard size={12} /> Monthly School NSB Fee — Required
                         </span>
                         <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Auto-Spread ON</span>
                       </div>
@@ -9924,7 +9954,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {/* Fee Amount */}
                   <div>
                     <label className="text-xs font-black uppercase tracking-widest text-slate-500 block mb-1">
-                      Fee Amount * (Lazmi)
+                      Fee Amount * (Required)
                     </label>
                     <input
                       type="number"
@@ -9941,7 +9971,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       return (
                         <div className="flex gap-1.5 mt-1.5">
                           <button onClick={() => setQuickCollectAmount(String(base))} className="px-2 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-black rounded-lg hover:bg-emerald-100 cursor-pointer">PKR {base.toLocaleString()}</button>
-                          <button onClick={() => setQuickCollectAmount(String(base * 2))} className="px-2 py-1 bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-black rounded-lg hover:bg-slate-100 cursor-pointer">PKR {(base * 2).toLocaleString()} (2 Mahine)</button>
+                          <button onClick={() => setQuickCollectAmount(String(base * 2))} className="px-2 py-1 bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-black rounded-lg hover:bg-slate-100 cursor-pointer">PKR {(base * 2).toLocaleString()} (2 Months)</button>
                         </div>
                       );
                     })()}
@@ -9961,7 +9991,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   return (
                     <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-3 space-y-1.5">
                       <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700 flex items-center gap-1.5">
-                        <CheckCircle2 size={12} /> Auto-Spread ON — ek amount, sary pending months me khud batt jayegi
+                        <CheckCircle2 size={12} /> Auto-Spread ON — one amount, automatically split across pending months
                       </p>
                       {allocs.length > 0 ? (
                         <div className="flex flex-wrap gap-1.5">
@@ -9994,7 +10024,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <CheckCircle2 size={14} className="shrink-0" /> School NSB Fee
                   </div>
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                    School NSB Fee — auto-spread: purane pending months pehle puray honge
+                    School NSB Fee — auto-spread: oldest pending months are cleared first
                   </p>
                 </div>
 
@@ -10037,7 +10067,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   return (
                     <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3 space-y-1.5">
                       <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700 flex items-center gap-1.5">
-                        <CheckCircle2 size={12} /> Receipt Preview — Kya Collect Hoga
+                        <CheckCircle2 size={12} /> Receipt Preview — What Will Be Collected
                       </p>
                       {mainAmt > 0 && (
                         <div className="flex justify-between text-[11px] font-bold text-slate-600">
@@ -10773,7 +10803,7 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
         </div>
         <button
           onClick={(e) => { e.stopPropagation(); onPayDues?.(); }}
-          title={totals.dues > 0 ? 'Click karein — dues/paper fund pay karein' : 'Koi due pending nahi'}
+          title={totals.dues > 0 ? 'Click — pay dues / paper fund' : 'No dues pending'}
           className={`p-2.5 rounded-xl bg-amber-50/70 border border-amber-100 text-left ${totals.dues > 0 ? 'hover:border-amber-400 hover:shadow-md cursor-pointer transition-all' : 'cursor-default'}`}
         >
           <span className="block text-[9px] font-black text-amber-500 uppercase tracking-widest">Dues / Paper Fund {totals.dues > 0 ? '• Pay →' : ''}</span>

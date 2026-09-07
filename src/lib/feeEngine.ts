@@ -121,30 +121,45 @@ export const editPayment = (students: StudentFeeData[], studentId: string | numb
 };
 
 // 2. getMonthlySummary - { due, paid, pending }
+// Robust month matching: 'Sep', 'Sept 2026', 'September 2026', 'September' — sab formats handle
+const MONTH_ALIAS: Record<string, number> = {
+  jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4,
+  jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11,
+};
+const normMonthIdx = (raw: unknown): number => {
+  const m = String(raw || '').trim().toLowerCase().match(/^([a-z]+)/);
+  return m ? (MONTH_ALIAS[m[1]] ?? -1) : -1;
+};
+const normMonthYear = (raw: unknown, fallback: number): number => {
+  const m = String(raw || '').match(/(\d{4})/);
+  return m ? Number(m[1]) : fallback;
+};
+
 export const getMonthlySummary = (student: StudentFeeData, month: string, year: number) => {
-  const monthIndex = MONTHS.indexOf(month as Month);
+  const monthIndex = normMonthIdx(month) !== -1 ? normMonthIdx(month) : MONTHS.indexOf(month as Month);
   const currentMonthIndex = new Date().getMonth();
   const currentYear = new Date().getFullYear();
   
   let isFutureMonth = false;
   if (year > currentYear) {
     isFutureMonth = true;
-  } else if (year === currentYear && monthIndex > currentMonthIndex) {
+  } else if (year === currentYear && monthIndex >= 0 && monthIndex > currentMonthIndex) {
     isFutureMonth = true;
   }
 
-  // Check enrollment month
+  // Check enrollment month (robust: 'September' / 'Sep' dono formats)
   let isBeforeEnrollment = false;
-  if (student.enrollmentMonth) {
-    const enrollIndex = MONTHS.indexOf(student.enrollmentMonth as Month);
-    if (enrollIndex > monthIndex) {
-      isBeforeEnrollment = true;
-    }
+  const enrollIndex = normMonthIdx(student.enrollmentMonth);
+  if (monthIndex >= 0 && enrollIndex >= 0 && enrollIndex > monthIndex) {
+    isBeforeEnrollment = true;
   }
 
   const due = (isFutureMonth || isBeforeEnrollment) ? 0 : student.monthlyFee;
+  // FIX: p.month === month (exact match) ki jagah robust parsing —
+  // 'September 2026' / 'Sep' / 'September' sab formats count hote hain
   const paid = student.payments
-    .filter(p => p.month === month && p.year === year)
+    .filter(p => normMonthIdx(p.month) === monthIndex && normMonthYear(p.month, year) === year)
     .reduce((sum, p) => sum + p.amount, 0);
   
   const pending = Math.max(0, due - paid);
