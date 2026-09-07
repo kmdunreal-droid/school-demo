@@ -1149,7 +1149,7 @@ export default function TeacherDashboard({
             <div className="relative">
               <button 
                 onClick={() => setShowNotifDropdown(!showNotifDropdown)}
-                className={`p-2 hover:bg-slate-100 border border-slate-200 rounded-none transition-all flex items-center justify-center relative uppercase font-black text-xs ${showNotifDropdown ? 'bg-slate-100' : 'bg-white'}`}
+                className={`p-2 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all flex items-center justify-center relative uppercase font-black text-xs ${showNotifDropdown ? 'bg-slate-100' : 'bg-white'}`}
                 title="Notifications"
               >
                 <Bell size={16} className="text-slate-600" />
@@ -1168,7 +1168,7 @@ export default function TeacherDashboard({
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 10 }}
-                      className="absolute right-0 mt-2 w-80 bg-white border border-slate-200 rounded-none shadow-xl z-50 py-3 flex flex-col font-sans"
+                      className="absolute right-0 mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-3 flex flex-col font-sans"
                     >
                       <div className="px-4 pb-2 border-b border-slate-150 flex items-center justify-between">
                         <span className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">School Bells / Alerts</span>
@@ -1272,7 +1272,7 @@ export default function TeacherDashboard({
               
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-100 pb-4 relative z-10">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 bg-indigo-50 text-indigo-600 rounded-none border border-indigo-150">
+                  <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-150">
                     <Bell size={20} className="animate-pulse" />
                   </div>
                   <div>
@@ -1314,7 +1314,7 @@ export default function TeacherDashboard({
                   </div>
 
                   {todayClasses.length === 0 ? (
-                    <div className="bg-slate-50 border border-slate-100 p-6 text-center text-slate-500 rounded-none text-xs">
+                    <div className="bg-slate-50 border border-slate-100 p-6 text-center text-slate-500 rounded-xl text-xs">
                       ☕ No formal lectures assigned to your ID under <strong>{currentDayName}</strong>. 
                       <p className="mt-1.5 text-xs text-slate-400">Great opportunity to review grading portfolios or coordinate with fellow faculty members!</p>
                     </div>
@@ -1379,7 +1379,7 @@ export default function TeacherDashboard({
                     </div>
 
                     {attendanceStatusList.length === 0 ? (
-                      <div className="bg-slate-50 border border-slate-100 p-6 text-center text-slate-500 rounded-none text-xs">
+                      <div className="bg-slate-50 border border-slate-100 p-6 text-center text-slate-500 rounded-xl text-xs">
                         No assigned classroom cohorts requiring registers today.
                       </div>
                     ) : (
@@ -1419,11 +1419,11 @@ export default function TeacherDashboard({
 
                             <div className="flex items-center gap-2">
                               {item.marked ? (
-                                <span className="text-xs font-mono font-extrabold text-emerald-700 bg-emerald-100/80 px-2 py-1 uppercase rounded-none flex items-center gap-1">
+                                <span className="text-xs font-mono font-extrabold text-emerald-700 bg-emerald-100/80 px-2 py-1 uppercase rounded-xl flex items-center gap-1">
                                   ✓ Logged
                                 </span>
                               ) : (
-                                <span className="text-xs font-mono font-extrabold text-rose-600 bg-rose-100/80 px-2 py-1 uppercase rounded-none">
+                                <span className="text-xs font-mono font-extrabold text-rose-600 bg-rose-100/80 px-2 py-1 uppercase rounded-xl">
                                   ⚠️ Pending
                                 </span>
                               )}
@@ -1483,7 +1483,7 @@ export default function TeacherDashboard({
                     className={`px-3 py-1.5 text-xs font-black uppercase tracking-widest rounded-full border transition-all cursor-pointer ${
                       timetableDayFilter === day
                         ? day === 'all'
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-md'
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
                           : 'bg-amber-500 text-white border-amber-500 shadow-md'
                         : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
                     }`}
@@ -1504,7 +1504,7 @@ export default function TeacherDashboard({
                   return (
                     <div key={day} className="animate-fade-in">
                       <div className="flex items-center gap-3 mb-3">
-                        <span className="text-xs font-black text-slate-900 uppercase tracking-[0.2em] bg-slate-900 text-white px-2 py-0.5">{day}</span>
+                        <span className="text-xs font-black text-slate-900 uppercase tracking-[0.2em] bg-indigo-600 text-white px-2 py-0.5">{day}</span>
                         <div className="h-px flex-1 bg-slate-100"></div>
                       </div>
                       <div className="grid grid-cols-2 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-3">
@@ -1585,7 +1585,7 @@ export default function TeacherDashboard({
                     </button>
 
                     <div className="flex items-center gap-3 mb-6">
-                      <div className="p-2 bg-slate-100 rounded-none border border-slate-200">
+                      <div className="p-2 bg-slate-100 rounded-xl border border-slate-200">
                         <Menu size={20} className="text-slate-900" />
                       </div>
                       <div>
@@ -1632,7 +1632,7 @@ export default function TeacherDashboard({
                           toast.success('Password updated successfully! Next login requires new credentials.');
                           setShowPasswordModal(false);
                         }}
-                        className="w-full bg-slate-900 text-white font-black uppercase tracking-widest py-3 hover:bg-slate-800 transition-all text-xs"
+                        className="w-full bg-indigo-600 text-white font-black uppercase tracking-widest py-3 rounded-xl hover:bg-indigo-700 transition-all text-xs"
                       >
                         Commit Changes
                       </button>
@@ -1643,10 +1643,10 @@ export default function TeacherDashboard({
             </AnimatePresence>
 
             {/* Quick Summary overview info */}
-            <div className="bg-slate-900 text-white rounded-none p-5 border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
+            <div className="bg-white text-slate-600 rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
               <div className="flex items-center gap-3">
-                <Info size={18} className="text-emerald-400 shrink-0" />
-                <p className="text-xs text-slate-300 font-sans">
+                <Info size={18} className="text-emerald-600 shrink-0" />
+                <p className="text-xs text-slate-500 font-sans">
                   You are editing simulated data. This app uses <strong>Indexed Storage (localStorage)</strong>. You can safely simulate different dates, record marks, and re-login as a student to see the changes update in real time.
                 </p>
               </div>
@@ -2090,7 +2090,7 @@ export default function TeacherDashboard({
                                               e.stopPropagation();
                                               handleTabChange('fees');
                                             }}
-                                            className={`px-1.5 py-0.5 rounded-none text-[10px] font-black uppercase tracking-tighter border transition-all ${
+                                            className={`px-1.5 py-0.5 rounded-xl text-[10px] font-black uppercase tracking-tighter border transition-all ${
                                               isPaid 
                                                 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' 
                                                 : 'bg-amber-50 text-amber-600 border-amber-100 animate-pulse'
@@ -2339,7 +2339,7 @@ export default function TeacherDashboard({
             {(() => {
               const absentsList = viewClassStudents.filter(student => scratchAttendance[student.id] === 'absent');
               return (
-                <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white p-5 rounded-none border-l-4 border-emerald-500 shadow-sm mt-8 space-y-4 font-sans border border-slate-750">
+                <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white p-5 rounded-xl border-l-4 border-emerald-500 shadow-sm mt-8 space-y-4 font-sans border border-slate-750">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <div>
                       <h3 className="text-xs font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1.5 font-display">
@@ -3889,19 +3889,19 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-white p-6 border border-slate-100 shadow-sm rounded-none">
+              <div className="bg-white p-6 border border-slate-100 shadow-sm rounded-xl">
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1 ">Total Expected</p>
                 <h3 className="text-2xl font-black text-slate-900 tracking-tighter">
                   {students.length * 5500}
                 </h3>
               </div>
-              <div className="bg-white p-6 border border-emerald-100 shadow-sm rounded-none">
+              <div className="bg-white p-6 border border-emerald-100 shadow-sm rounded-xl">
                 <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-1 ">Cash Collected</p>
                 <h3 className="text-2xl font-black text-emerald-700 tracking-tighter">
                   {fees.reduce((acc, curr) => acc + curr.amount, 0)}
                 </h3>
               </div>
-              <div className="bg-white p-6 border border-amber-100 shadow-sm rounded-none">
+              <div className="bg-white p-6 border border-amber-100 shadow-sm rounded-xl">
                 <p className="text-xs font-bold text-amber-600 uppercase tracking-widest mb-1 ">Pending Dues</p>
                 <h3 className="text-2xl font-black text-amber-700 tracking-tighter">
                   {(students.length * 5500) - fees.reduce((acc, curr) => acc + curr.amount, 0)}
@@ -3961,9 +3961,9 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
 
         {activeTab === 'settings' && (
           <div id="panel-teacher-settings" className="space-y-8 animate-fade-in bg-slate-50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 shadow-inner">
-            <div className="bg-white rounded-none p-8 border border-slate-200 shadow-sm border-t-4 border-t-indigo-600">
+            <div className="bg-white rounded-xl p-8 border border-slate-200 shadow-sm border-t-4 border-t-indigo-600">
               <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-indigo-50 rounded-none border border-indigo-100">
+                <div className="p-2 bg-indigo-50 rounded-xl border border-indigo-100">
                   <Sparkles size={24} className="text-indigo-600" />
                 </div>
                 <div>
@@ -4006,7 +4006,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                       name="username"
                       type="text" 
                       defaultValue={teacherProfile?.username || ''}
-                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-none focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
+                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
                       placeholder="Enter new login ID"
                       required
                     />
@@ -4018,7 +4018,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                       name="password"
                       type="password" 
                       defaultValue={teacherProfile?.password || ''}
-                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-none focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
+                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
                       placeholder="Enter new password"
                       required
                     />
@@ -4029,7 +4029,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                     <input 
                       name="confirm_password"
                       type="password" 
-                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-none focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
+                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
                       placeholder="Confirm new password"
                       required
                     />
@@ -4302,7 +4302,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                           .filter(m => m.studentId === selectedStudentProfile.id)
                           .sort((a, b) => b.id.localeCompare(a.id))
                           .map(m => (
-                            <div key={m.id} className="p-4 bg-white border border-slate-100 flex items-center justify-between hover:border-indigo-200 transition-all shadow-xs rounded-none">
+                            <div key={m.id} className="p-4 bg-white border border-slate-100 flex items-center justify-between hover:border-indigo-200 transition-all shadow-xs rounded-xl">
                               <div className="text-left">
                                 <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">{m.examType}</h4>
                                 <p className="text-xs text-slate-400 font-bold uppercase mt-0.5">{m.subject}</p>
@@ -4345,7 +4345,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-white border border-slate-200 w-full max-w-lg shadow-2xl overflow-hidden flex flex-col rounded-none"
+            className="bg-white border border-slate-200 w-full max-w-lg shadow-2xl overflow-hidden flex flex-col rounded-xl"
           >
             <div className="p-6 border-b border-slate-100 flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -4382,7 +4382,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                     setFeeNotificationPopup(prev => prev ? { ...prev, messageText: revisedText } : null);
                   }}
                   rows={6}
-                  className="w-full bg-slate-50 text-xs p-4 rounded-none text-slate-800 border border-slate-100 focus:outline-none focus:border-indigo-600 leading-relaxed resize-none font-medium"
+                  className="w-full bg-slate-50 text-xs p-4 rounded-xl text-slate-800 border border-slate-100 focus:outline-none focus:border-indigo-600 leading-relaxed resize-none font-medium"
                 />
               </div>
 

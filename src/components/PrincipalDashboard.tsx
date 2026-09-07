@@ -2900,7 +2900,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
         {/* ========== DASHBOARD OVERVIEW TABLEAUX ========== */}
         {activeTab === 'dashboard' && (
-          <div id="panel-principal-dashboard" className="space-y-8 animate-fade-in bg-emerald-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-emerald-100 shadow-inner">
+          <div id="panel-principal-dashboard" className="space-y-8 animate-fade-in">
             {/* Greeting Header */}
             <div className="bg-emerald-600 p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-emerald-700/50">
               <h2 className="text-xl sm:text-2xl md:text-3xl font-black text-white tracking-tighter font-display uppercase leading-tight truncate whitespace-nowrap">
@@ -3129,12 +3129,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         {activeTab === 'management_hub' && (
           <div className="space-y-8 animate-fade-in pb-20">
             {/* Management Hub Sub-Navigation Header */}
-            <div className="bg-white border border-slate-200 p-2 shadow-sm flex flex-wrap gap-2 sticky top-0 z-10">
+            <div className="bg-white/95 backdrop-blur border border-slate-200 p-2 shadow-sm flex flex-wrap gap-2 sticky top-0 z-10 rounded-2xl">
               <button
                 onClick={() => setManagementSubTab('teachers')}
-                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'teachers' 
-                    ? 'bg-slate-900 text-white shadow-lg' 
+                    ? 'bg-indigo-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3143,9 +3143,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               </button>
               <button
                 onClick={() => setManagementSubTab('students')}
-                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'students' 
-                    ? 'bg-slate-900 text-white shadow-lg' 
+                    ? 'bg-indigo-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3154,9 +3154,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               </button>
               <button
                 onClick={() => setManagementSubTab('classes')}
-                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'classes' 
-                    ? 'bg-slate-900 text-white shadow-lg' 
+                    ? 'bg-indigo-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3165,9 +3165,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               </button>
               <button
                 onClick={() => setManagementSubTab('coordinators')}
-                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'coordinators' 
-                    ? 'bg-slate-900 text-white shadow-lg' 
+                    ? 'bg-indigo-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3180,14 +3180,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             <div>
               {/* TEACHERS SUB-VIEW */}
               {managementSubTab === 'teachers' && (
-                <div id="panel-principal-teachers" className="space-y-6 animate-fade-in bg-cyan-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-cyan-100 shadow-inner">
+                <div id="panel-principal-teachers" className="space-y-6 animate-fade-in">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
                       <h1 className="text-2xl font-black text-slate-900 tracking-tighter uppercase ">Teacher List</h1>
                     </div>
                     <button
                       onClick={() => openAddModal('teacher')}
-                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-indigo-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
+                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg rounded-xl"
                     >
                       <Plus size={14} />
                       Register New Teacher
@@ -3204,7 +3204,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={teacherSearch}
                       onChange={(e) => setTeacherSearch(e.target.value)}
                       placeholder="Search faculty by name, subject, or email..."
-                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 focus:outline-none focus:border-indigo-600 transition-all text-xs font-bold"
+                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 transition-all text-xs font-bold"
                     />
                   </div>
 
@@ -3276,14 +3276,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
               {/* STUDENTS SUB-VIEW */}
               {managementSubTab === 'students' && (
-                <div id="panel-principal-students" className="space-y-6 animate-fade-in bg-violet-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-violet-100 shadow-inner">
+                <div id="panel-principal-students" className="space-y-6 animate-fade-in">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
                       <h1 className="text-2xl font-black text-slate-900 tracking-tighter uppercase ">Student List</h1>
                     </div>
                     <button
                       onClick={() => openAddModal('student')}
-                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-emerald-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
+                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
                     >
                       <Plus size={14} />
                       Add Student
@@ -3298,7 +3298,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={studentSearch}
                         onChange={(e) => setStudentSearch(e.target.value)}
                         placeholder="Search student by name, roll, or parent name..."
-                        className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 focus:outline-none focus:border-emerald-600 transition-all text-xs font-bold"
+                        className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 transition-all text-xs font-bold"
                       />
                     </div>
                     <select
@@ -3403,7 +3403,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
               {/* CLASSES SUB-VIEW */}
               {managementSubTab === 'classes' && (
-                <div id="panel-principal-classes" className="space-y-6 animate-fade-in bg-fuchsia-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-fuchsia-100 shadow-inner">
+                <div id="panel-principal-classes" className="space-y-6 animate-fade-in">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
                       <h1 className="text-2xl font-black text-slate-900 tracking-tighter uppercase ">Class List</h1>
@@ -3493,7 +3493,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
               {/* COORDINATORS SUB-VIEW */}
               {managementSubTab === 'coordinators' && (
-                <div id="panel-principal-coordinators" className="space-y-6 animate-fade-in bg-teal-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-teal-100 shadow-inner">
+                <div id="panel-principal-coordinators" className="space-y-6 animate-fade-in">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
                       <h1 className="text-2xl font-black text-slate-900 tracking-tighter uppercase ">Coordinator List</h1>
@@ -3517,7 +3517,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={coordinatorSearch}
                       onChange={(e) => setCoordinatorSearch(e.target.value)}
                       placeholder="Search coordinators by name, username, or email..."
-                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 focus:outline-none focus:border-indigo-600 transition-all text-xs font-bold"
+                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 transition-all text-xs font-bold"
                     />
                   </div>
 
@@ -3598,7 +3598,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
         {/* ========== TIMETABLE TABLEAUX ========== */}
         {activeTab === 'timetable' && (
-          <div id="panel-principal-timetable" className="space-y-6 animate-fade-in bg-amber-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-amber-100 shadow-inner">
+          <div id="panel-principal-timetable" className="space-y-6 animate-fade-in">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Interactive Class Timetable</h1>
@@ -3887,10 +3887,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
-                <h1 className="text-3xl font-black text-slate-900 tracking-tight uppercase  border-l-8 border-indigo-600 pl-6">
+                <h1 className="text-2xl font-black text-slate-900 tracking-tighter uppercase flex items-center gap-3">
+                  <span className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-100 flex items-center justify-center shrink-0"><FileText size={18} className="text-violet-600" /></span>
                   Student Report
                 </h1>
-                <p className="text-xs font-bold text-slate-500 uppercase tracking-[0.3em] mt-2 pl-6">
+                <p className="text-[10px] font-black uppercase tracking-[0.25em] text-slate-400 mt-2">
                   Academic & Financial Analytics Hub
                 </p>
               </div>
@@ -3946,8 +3947,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
-                      <tr className="bg-slate-900 text-white">
-                        <th className="px-1.5 py-2 text-xs font-black uppercase tracking-tight">Student</th>
+                      <tr className="bg-slate-50 border-b border-slate-200">
+                        <th className="px-1.5 py-2 text-xs font-black uppercase tracking-tight text-slate-500">Student</th>
                         <th className="px-1.5 py-2 text-xs font-black uppercase tracking-tight text-center">Fee Status</th>
                         <th className="px-1.5 py-2 text-xs font-black uppercase tracking-tight text-center">Test Avg</th>
                         <th className="px-1.5 py-2 text-xs font-black uppercase tracking-tight text-right">Pending</th>
@@ -4250,7 +4251,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             </div>
 
             {/* Sub-tab Switcher Buttons */}
-            <div className="bg-white border border-slate-200 p-2 shadow-sm flex flex-wrap gap-2 sticky top-0 z-10 rounded-2xl mb-8">
+            <div className="bg-white/95 backdrop-blur border border-slate-200 p-2 shadow-sm flex flex-wrap gap-2 sticky top-0 z-10 rounded-2xl rounded-2xl mb-8">
               <button
                 onClick={() => setRegistersSubTab('fees')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-widest transition-all flex items-center justify-center gap-2.5 rounded-xl cursor-pointer ${
@@ -5613,7 +5614,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
         {/* ========== NEW SCHOOL FEE MANAGEMENT MODULE OLD (REPLACED BY AUDIT HUB) ========== */}
         {activeTab === 'fees' && (
-          <div id="panel-principal-fees" className="space-y-6 animate-fade-in font-sans pb-20 bg-emerald-50/50 p-4 sm:p-6 rounded-2xl border border-emerald-100 shadow-inner">
+          <div id="panel-principal-fees" className="space-y-6 animate-fade-in font-sans pb-20">
             {/* 1. Global Dashboard Stats Row */}
             {(() => {
               const stats = getGlobalStats(feeStudents);

@@ -539,7 +539,7 @@ export default function StudentDashboard({
                 }}
                 className={`w-full flex items-center gap-3 px-4 py-3 text-xs font-black uppercase tracking-widest text-left transition-all ${
                   activeTab === item.id 
-                    ? 'bg-slate-900 text-white' 
+                    ? 'bg-indigo-600 text-white shadow-md' 
                     : 'text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -561,7 +561,7 @@ export default function StudentDashboard({
         {/* Minimalist Account Section */}
         <div className="p-6 border-t border-slate-50">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-8 h-8 rounded-none bg-slate-900 flex items-center justify-center text-white font-black text-xs ">
+            <div className="w-8 h-8 rounded-xl bg-slate-900 flex items-center justify-center text-white font-black text-xs ">
               <User size={14} />
             </div>
             <div className="truncate">
@@ -631,7 +631,7 @@ export default function StudentDashboard({
             <button
               type="button"
               onClick={handleToggleTheme}
-              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-none transition-all flex items-center justify-center text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900"
+              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl transition-all flex items-center justify-center text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900"
               title="Toggle Dark/Light Mode"
             >
               {darkTheme ? <Sun size={15} className="text-amber-500 animate-pulse" /> : <Moon size={15} />}
@@ -642,7 +642,7 @@ export default function StudentDashboard({
             <div className="relative">
               <button 
                 onClick={() => setShowNotifDropdown(!showNotifDropdown)}
-                className={`p-2 hover:bg-slate-100 border border-slate-200 rounded-none transition-all flex items-center justify-center relative uppercase font-black text-xs ${showNotifDropdown ? 'bg-slate-100' : 'bg-white'}`}
+                className={`p-2 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all flex items-center justify-center relative uppercase font-black text-xs ${showNotifDropdown ? 'bg-slate-100' : 'bg-white'}`}
                 title="Notifications"
               >
                 <Bell size={16} className="text-slate-600" />
@@ -661,7 +661,7 @@ export default function StudentDashboard({
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 10 }}
-                      className="absolute right-0 mt-2 w-80 bg-white border border-slate-200 rounded-none shadow-xl z-50 py-3 flex flex-col font-sans"
+                      className="absolute right-0 mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-3 flex flex-col font-sans"
                     >
                       <div className="px-4 pb-2 border-b border-slate-150 flex items-center justify-between">
                         <span className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Campus Broadcaster</span>
@@ -716,7 +716,7 @@ export default function StudentDashboard({
         {activeTab === 'dashboard' && (
           <div id="panel-student-home" className="space-y-8 animate-fade-in bg-sky-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-sky-100 shadow-inner">
             {/* Greeting Header */}
-            <div className="bg-white rounded-none p-6 md:p-8 border border-slate-200 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-6 border-t-4 border-t-indigo-600">
+            <div className="bg-white rounded-xl p-6 md:p-8 border border-slate-200 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-6 border-t-4 border-t-indigo-600">
               <div>
                 <span className="text-xs font-extrabold text-indigo-600 uppercase tracking-widest block mb-1">STUDENT ADVISORY</span>
                 <h1 className="text-2xl font-black text-slate-900 tracking-tight font-display uppercase">Hello, {userSession.name.split(' ').slice(0, 1).join(' ') || userSession.name}!</h1>
@@ -729,12 +729,12 @@ export default function StudentDashboard({
               </div>
 
               <div className="flex gap-2.5">
-                <div className="p-4 bg-indigo-50 rounded-none border border-indigo-100/60 text-center">
+                <div className="p-4 bg-indigo-50 rounded-xl border border-indigo-100/60 text-center">
                   <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Attendance Rate</h4>
                   <p className="text-xl font-bold text-indigo-950 mt-1">{attendancePercent}%</p>
                 </div>
 
-                <div className="p-4 bg-emerald-50 rounded-none border border-emerald-100/60 text-center">
+                <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-100/60 text-center">
                   <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Marks Logged</h4>
                   <p className="text-xl font-bold text-emerald-900 mt-1">{myMarks.length} elements</p>
                 </div>
@@ -755,7 +755,7 @@ export default function StudentDashboard({
                 }}
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.95 }}
-                className="bg-white p-6 border-b-4 border-indigo-500 shadow-sm rounded-none hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
+                className="bg-white p-6 border-b-4 border-indigo-500 shadow-sm rounded-xl hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
               >
                 <div onClick={() => handleTabChange('attendance')}>
                   <div className="flex items-center justify-between mb-4">
@@ -769,9 +769,9 @@ export default function StudentDashboard({
 
                   {/* Attendance visual bar */}
                   <div className="my-5">
-                    <div className="h-3 w-full bg-slate-100 rounded-none overflow-hidden border border-slate-200">
+                    <div className="h-3 w-full bg-slate-100 rounded-xl overflow-hidden border border-slate-200">
                       <div 
-                        className={`h-full rounded-none transition-all duration-500 ${
+                        className={`h-full rounded-xl transition-all duration-500 ${
                           attendancePercent >= 75 ? 'bg-emerald-500' : 'bg-rose-500'
                         }`}
                         style={{ width: `${attendancePercent}%` }}
@@ -793,7 +793,7 @@ export default function StudentDashboard({
               {/* Marks Quick Peek Widget - Geometric style */}
               <div 
                 onClick={() => handleTabChange('marks')}
-                className="bg-white p-6 border-b-4 border-amber-500 shadow-sm rounded-none hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
+                className="bg-white p-6 border-b-4 border-amber-500 shadow-sm rounded-xl hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
               >
                 <div>
                   <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide font-display flex items-center gap-1.5 mb-3">
@@ -811,7 +811,7 @@ export default function StudentDashboard({
                               <span className="font-semibold text-slate-900">{item.subject}</span>
                               <span className="text-slate-400 font-medium ml-1.5">({item.examType})</span>
                             </div>
-                            <span className={`font-mono font-bold px-1.5 py-0.5 rounded-none text-xs border-l-2 bg-slate-50 ${grade.color}`}>
+                            <span className={`font-mono font-bold px-1.5 py-0.5 rounded-xl text-xs border-l-2 bg-slate-50 ${grade.color}`}>
                               Grade {grade.letter} ({item.marksObtained}/{item.maxMarks})
                             </span>
                           </div>
@@ -834,7 +834,7 @@ export default function StudentDashboard({
             </div>
 
             {/* ========== ACADEMIC SUBJECT PROGRESS SUMMARY ========== */}
-            <div id="academic-progress-summary-card" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-sm border-t-4 border-t-emerald-500 rounded-none animate-fade-in">
+            <div id="academic-progress-summary-card" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-sm border-t-4 border-t-emerald-500 rounded-xl animate-fade-in">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wide font-display flex items-center gap-2">
@@ -890,7 +890,7 @@ export default function StudentDashboard({
                         <div className="flex justify-between items-center text-xs">
                           <span className="font-extrabold text-slate-950 dark:text-white uppercase tracking-wider">{subject}</span>
                           <div className="flex items-center gap-2">
-                            <span className={`text-xs font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-none font-mono ${bgColor} ${textColor}`}>
+                            <span className={`text-xs font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-xl font-mono ${bgColor} ${textColor}`}>
                               {label}
                             </span>
                             <span className="font-mono font-black text-slate-900 dark:text-slate-100">{percentage}%</span>
@@ -898,9 +898,9 @@ export default function StudentDashboard({
                         </div>
 
                         {/* Progress Bar Container */}
-                        <div className="h-2.5 w-full bg-slate-100 dark:bg-slate-800 rounded-none overflow-hidden border border-slate-200 dark:border-slate-700">
+                        <div className="h-2.5 w-full bg-slate-100 dark:bg-slate-800 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700">
                           <motion.div 
-                            className={`h-full rounded-none ${barColor}`}
+                            className={`h-full rounded-xl ${barColor}`}
                             initial={{ width: 0 }}
                             animate={{ width: `${percentage}%` }}
                             transition={{ duration: 1, ease: 'easeOut' }}
@@ -1004,10 +1004,10 @@ export default function StudentDashboard({
             </div>
 
             {/* Sandbox details */}
-            <div className="bg-slate-900 text-white rounded-none p-5 border border-slate-800 flex items-start gap-3 shadow-xs">
-              <Info size={18} className="text-indigo-400 shrink-0 mt-0.5" />
+            <div className="bg-white text-slate-600 rounded-2xl p-5 border border-slate-200 shadow-sm flex items-start gap-3 shadow-xs">
+              <Info size={18} className="text-indigo-600 shrink-0 mt-0.5" />
               <div>
-                <span className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Dynamic Sandbox Update :</span>
+                <span className="text-xs font-bold text-indigo-600 uppercase tracking-widest">Dynamic Sandbox Update :</span>
                 <p className="text-xs text-slate-300 mt-1 font-sans">
                   You can test this portal's response: Log out, log in as principal/teacher, edit attendance logs or enter new exam scores for "Jane Doe", then re-login as student student@school.com to see instant student view synchronization.
                 </p>
@@ -1584,7 +1584,7 @@ export default function StudentDashboard({
               </div>
               <button 
                 onClick={() => window.print()}
-                className="flex items-center justify-center gap-2 bg-slate-900 text-white px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg"
+                className="flex items-center justify-center gap-2 bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg"
               >
                 <Download size={14} />
                 Download / Print Card
