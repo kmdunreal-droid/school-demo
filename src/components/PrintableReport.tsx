@@ -106,7 +106,7 @@ export default function PrintableReport({ student, studentClass, marks, fees }: 
                   <td className="px-4 py-2 border-r border-slate-900">{f.paidDate || '—'}</td>
                   <td className="px-4 py-2 border-r border-slate-900">{f.paymentMethod || 'Cash'}</td>
                   <td className="px-4 py-2 border-r border-slate-900 text-center">
-                    <span className={`px-2 py-0.5 font-bold uppercase text-[11px] ${f.status === 'paid' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                    <span className={`px-2 py-0.5 font-bold uppercase text-[11px] ${f.status === 'paid' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-800'}`}>
                       {f.status}
                     </span>
                   </td>

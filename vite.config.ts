@@ -21,7 +21,7 @@ export default defineConfig(() => {
           id: '/',
           display: 'standalone',
           background_color: '#0f172a',
-          theme_color: '#4f46e5',
+          theme_color: '#0d9488',
           icons: [
             {
               src: '/logo.png',

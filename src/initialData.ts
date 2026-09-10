@@ -1,4 +1,4 @@
-import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, FeeRecord } from './types';
+import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, FeeRecord, TeacherPayConfig, SchoolLocation } from './types';
 
 export const INITIAL_TEACHERS: Teacher[] = [
   {
@@ -537,4 +537,26 @@ export const INITIAL_FEES: FeeRecord[] = [
   { id: 'f9', studentId: 's5', amount: 600, dueDate: '2026-06-15', status: 'pending', month: 'June 2026', feeType: 'Tuition Fee' },
   { id: 'f10', studentId: 's5', amount: 600, dueDate: '2026-05-15', status: 'paid', paidDate: '2026-05-13', month: 'May 2026', paymentMethod: 'Cash', feeType: 'Tuition Fee' }
 ];
+
+// ============================================================
+// TEACHER PAY — default monthly hisab config (har teacher ke liye)
+// ============================================================
+export const INITIAL_TEACHER_PAY_CONFIGS: TeacherPayConfig[] = [
+  { teacherId: 't1', baseSalary: 55000, bonusPerPresentDay: 300, lateDeductionPerDay: 500, absentDeductionPerDay: 1500, allowances: 2000, deductions: 0 },
+  { teacherId: 't2', baseSalary: 52000, bonusPerPresentDay: 250, lateDeductionPerDay: 500, absentDeductionPerDay: 1500, allowances: 1500, deductions: 0 },
+  { teacherId: 't3', baseSalary: 48000, bonusPerPresentDay: 250, lateDeductionPerDay: 500, absentDeductionPerDay: 1400, allowances: 1000, deductions: 0 },
+  { teacherId: 't4', baseSalary: 42000, bonusPerPresentDay: 200, lateDeductionPerDay: 400, absentDeductionPerDay: 1200, allowances: 1000, deductions: 0 },
+  { teacherId: 't5', baseSalary: 45000, bonusPerPresentDay: 200, lateDeductionPerDay: 400, absentDeductionPerDay: 1300, allowances: 500, deductions: 0 },
+  { teacherId: 't6', baseSalary: 58000, bonusPerPresentDay: 350, lateDeductionPerDay: 600, absentDeductionPerDay: 1800, allowances: 2000, deductions: 0 },
+];
+
+// ============================================================
+// SCHOOL LOCATION — GPS attendance verification ke liye default
+// ============================================================
+export const INITIAL_SCHOOL_LOCATION: SchoolLocation = {
+  lat: 24.8607,
+  lng: 67.0011,
+  radiusMeters: 500,
+  name: 'NSB1 Academy (Karachi)',
+};
 

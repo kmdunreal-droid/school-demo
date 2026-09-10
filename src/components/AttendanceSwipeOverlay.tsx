@@ -31,7 +31,7 @@ export default function AttendanceSwipeOverlay({ isOpen, onClose, children }: Pr
               <X size={24} />
             </button>
             <div className="flex items-center gap-2 mb-4 border-b pb-4">
-              <Calendar className="text-indigo-600" />
+              <Calendar className="text-teal-600" />
               <h2 className="text-lg font-bold">Attendance Details</h2>
             </div>
             {children}

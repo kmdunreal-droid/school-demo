@@ -43,7 +43,7 @@ export const HoldActionWrapper: React.FC<HoldActionWrapperProps> = ({
                 setShowMenu(false);
                 onDetail();
               }}
-              className="flex items-center gap-1.5 px-3 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer"
             >
               <FileText size={14} /> Detail
             </button>
@@ -56,7 +56,7 @@ export const HoldActionWrapper: React.FC<HoldActionWrapperProps> = ({
                 setShowMenu(false);
                 onEdit();
               }}
-              className="flex items-center gap-1.5 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer"
             >
               <Edit2 size={14} /> Edit
             </button>

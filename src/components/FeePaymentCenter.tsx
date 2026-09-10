@@ -174,14 +174,14 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
             className="bg-white w-full max-w-4xl rounded-3xl shadow-2xl overflow-hidden border border-slate-200 max-h-[94vh] flex flex-col"
           >
             {/* ===== Header ===== */}
-            <div className="bg-emerald-600 p-4 sm:p-5 text-white flex justify-between items-center gap-3 shrink-0">
+            <div className="bg-amber-600 p-4 sm:p-5 text-white flex justify-between items-center gap-3 shrink-0">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-11 h-11 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
                   <CreditCard size={22} />
                 </div>
                 <div className="min-w-0">
                   <h2 className="text-base sm:text-lg font-black uppercase tracking-tight">Fee Payment Center</h2>
-                  <p className="text-[10px] uppercase font-bold text-emerald-100 truncate">
+                  <p className="text-[10px] uppercase font-bold text-amber-100 truncate">
                     {fs ? `${fs.name} - ${fs.class} - ${year}` : 'Month-wise Fee - Paper Fund - Other Funds - Dues'}
                   </p>
                 </div>
@@ -203,7 +203,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                       placeholder="Search student by name, class or ID..."
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
-                      className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none"
+                      className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-amber-500 outline-none"
                       autoFocus
                     />
                   </div>
@@ -216,7 +216,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         <button
                           key={String(r.f.id)}
                           onClick={() => { setSelectedId(String(r.f.id)); setPanel(null); }}
-                          className="text-left p-3 rounded-xl border border-slate-200 hover:border-emerald-400 hover:bg-emerald-50/40 transition-all cursor-pointer"
+                          className="text-left p-3 rounded-xl border border-slate-200 hover:border-amber-400 hover:bg-amber-50/40 transition-all cursor-pointer"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0">
@@ -235,7 +235,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                               <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[9px] font-black uppercase tracking-wide">Dues: {r.duesPending.toLocaleString()}</span>
                             )}
                             {r.tuitionPending === 0 && r.duesPending === 0 && (
-                              <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[9px] font-black uppercase tracking-wide">All Clear</span>
+                              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[9px] font-black uppercase tracking-wide">All Clear</span>
                             )}
                           </div>
                         </button>
@@ -251,9 +251,9 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                 <>
                   {/* Summary strip */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-                    <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-100">
-                      <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">Total Paid</span>
-                      <span className="block text-sm font-black text-indigo-700">PKR {paidTotal.toLocaleString()}</span>
+                    <div className="p-3 rounded-xl bg-teal-50/70 border border-teal-100">
+                      <span className="block text-[9px] font-black text-teal-400 uppercase tracking-widest">Total Paid</span>
+                      <span className="block text-sm font-black text-teal-700">PKR {paidTotal.toLocaleString()}</span>
                     </div>
                     <div className="p-3 rounded-xl bg-rose-50/70 border border-rose-100">
                       <span className="block text-[9px] font-black text-rose-400 uppercase tracking-widest">Tuition Remaining</span>
@@ -276,7 +276,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         <AlertCircle size={12} className="text-amber-500" /> Dues and Other Funds - Paper Fund, Exam Fee, Summer Pack etc.
                       </h4>
                       {paidDues.length > 0 && (
-                        <button onClick={() => setShowPaidDues(v => !v)} className="text-[9px] font-black text-emerald-600 uppercase tracking-widest hover:underline cursor-pointer flex items-center gap-1">
+                        <button onClick={() => setShowPaidDues(v => !v)} className="text-[9px] font-black text-amber-600 uppercase tracking-widest hover:underline cursor-pointer flex items-center gap-1">
                           <ChevronDown size={10} className={showPaidDues ? 'rotate-180' : ''} /> Paid ({paidDues.length})
                         </button>
                       )}
@@ -296,13 +296,13 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                                   </p>
                                   <p className="text-[10px] font-bold text-slate-400 mt-1">
                                     Total: PKR {Number(d.amount || 0).toLocaleString()}
-                                    {pd > 0 && <> - Paid: <span className="text-emerald-600 font-black">PKR {pd.toLocaleString()}</span></>}
+                                    {pd > 0 && <> - Paid: <span className="text-amber-600 font-black">PKR {pd.toLocaleString()}</span></>}
                                     {' '}- Remaining: <span className="text-rose-600 font-black">PKR {rem.toLocaleString()}</span>
                                   </p>
                                 </div>
                                 <button
                                   onClick={() => openDuePanel(d)}
-                                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
                                 >
                                   <Banknote size={13} /> Pay Now
                                 </button>
@@ -319,9 +319,9 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         })}
                       </div>
                     ) : (
-                      <div className="p-4 rounded-xl border border-emerald-100 bg-emerald-50/50 flex items-center gap-2">
-                        <BadgeCheck size={16} className="text-emerald-600" />
-                        <span className="text-xs font-black text-emerald-700 uppercase tracking-wide">Koi pending due nahi - sab clear</span>
+                      <div className="p-4 rounded-xl border border-amber-100 bg-amber-50/50 flex items-center gap-2">
+                        <BadgeCheck size={16} className="text-amber-600" />
+                        <span className="text-xs font-black text-amber-700 uppercase tracking-wide">Koi pending due nahi - sab clear</span>
                       </div>
                     )}
                     {showPaidDues && paidDues.length > 0 && (
@@ -329,7 +329,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         {paidDues.map(d => (
                           <div key={d.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
                             <span className="text-[10px] font-black text-slate-500 uppercase tracking-wide">{d.desc} - {d.month} {d.year}</span>
-                            <span className="text-[10px] font-black text-emerald-600">PAID - PKR {Number(d.amount || 0).toLocaleString()}</span>
+                            <span className="text-[10px] font-black text-amber-600">PAID - PKR {Number(d.amount || 0).toLocaleString()}</span>
                           </div>
                         ))}
                       </div>
@@ -340,11 +340,11 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                   <div>
                     <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                       <div className="flex items-center gap-2">
-                        <button onClick={() => setYear(y => y - 1)} className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-emerald-400 hover:text-emerald-600 transition-colors cursor-pointer">&#8249;</button>
-                        <span className="text-xs font-black text-emerald-600 uppercase">{year}</span>
-                        <button onClick={() => setYear(y => y + 1)} className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-emerald-400 hover:text-emerald-600 transition-colors cursor-pointer">&#8250;</button>
+                        <button onClick={() => setYear(y => y - 1)} className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-amber-400 hover:text-amber-600 transition-colors cursor-pointer">&#8249;</button>
+                        <span className="text-xs font-black text-amber-600 uppercase">{year}</span>
+                        <button onClick={() => setYear(y => y + 1)} className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-amber-400 hover:text-amber-600 transition-colors cursor-pointer">&#8250;</button>
                         <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                          <CalendarDays size={12} className="text-emerald-500" /> Month-wise Fee - Base / Paid / Remaining
+                          <CalendarDays size={12} className="text-amber-500" /> Month-wise Fee - Base / Paid / Remaining
                         </h4>
                       </div>
                       {tuitionPendingTotal > 0 && (
@@ -356,23 +356,23 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
 
                     <div className="space-y-1.5">
                       {monthRows.map(r => (
-                        <div key={r.m} className={`p-2.5 rounded-xl border ${r.tuitionRemaining === 0 && r.duesPending === 0 ? 'bg-emerald-50/50 border-emerald-100' : 'bg-white border-slate-200'}`}>
+                        <div key={r.m} className={`p-2.5 rounded-xl border ${r.tuitionRemaining === 0 && r.duesPending === 0 ? 'bg-amber-50/50 border-amber-100' : 'bg-white border-slate-200'}`}>
                           <div className="flex items-center justify-between gap-3 flex-wrap">
                             <div className="flex items-center gap-3 min-w-0">
                               <span className="w-11 text-[11px] font-black text-slate-700 uppercase shrink-0">{r.m}</span>
                               <div className="text-[9px] font-bold text-slate-400 uppercase leading-tight">
-                                <span>Base: PKR {r.base.toLocaleString()} - Paid: <span className="text-emerald-600 font-black">PKR {r.paid.toLocaleString()}</span></span>
+                                <span>Base: PKR {r.base.toLocaleString()} - Paid: <span className="text-amber-600 font-black">PKR {r.paid.toLocaleString()}</span></span>
                                 {r.tuitionRemaining > 0 && <span className="block">Remaining: <span className="text-rose-600 font-black">PKR {r.tuitionRemaining.toLocaleString()}</span></span>}
                                 {r.duesPending > 0 && <span className="block">Dues (Pending): <span className="text-amber-600 font-black">PKR {r.duesPending.toLocaleString()}</span></span>}
                               </div>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
                               {r.tuitionRemaining === 0 && r.duesPending === 0 ? (
-                                <span className="px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700 text-[9px] font-black uppercase tracking-widest flex items-center gap-1"><CheckCircle2 size={10} /> Clear</span>
+                                <span className="px-2 py-1 rounded-lg bg-amber-100 text-amber-700 text-[9px] font-black uppercase tracking-widest flex items-center gap-1"><CheckCircle2 size={10} /> Clear</span>
                               ) : (
                                 <button
                                   onClick={() => openMonthPanel(r.m, r.tuitionRemaining)}
-                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1 cursor-pointer"
                                 >
                                   <Banknote size={11} /> {r.tuitionRemaining > 0 ? 'Pay' : 'Advance'}
                                 </button>
@@ -408,7 +408,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                   {recentPayments.length > 0 && (
                     <div>
                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                        <Receipt size={12} className="text-indigo-500" /> Recent Payments
+                        <Receipt size={12} className="text-teal-500" /> Recent Payments
                       </h4>
                       <div className="space-y-1.5">
                         {recentPayments.map(p => (
@@ -417,7 +417,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                               <span className="text-[10px] font-black text-slate-700 uppercase tracking-wide">{p.feeType || 'School NSB Fee'}</span>
                               <span className="text-[9px] font-bold text-slate-400 uppercase block">{p.month} {Number(p.year) || year} - {p.date}</span>
                             </div>
-                            <span className="text-xs font-black text-emerald-600 shrink-0">PKR {Number(p.amount || 0).toLocaleString()}</span>
+                            <span className="text-xs font-black text-amber-600 shrink-0">PKR {Number(p.amount || 0).toLocaleString()}</span>
                           </div>
                         ))}
                       </div>
@@ -459,7 +459,7 @@ function PayPanel({ amount, setAmount, method, setMethod, remaining, onConfirm, 
           {remaining > 0 ? `Remaining: PKR ${remaining.toLocaleString()}` : 'Advance / Extra Amount'}
         </span>
         {remaining > 0 && (
-          <button onClick={() => setAmount(String(remaining))} className="text-[9px] font-black text-emerald-600 uppercase tracking-widest hover:underline cursor-pointer">
+          <button onClick={() => setAmount(String(remaining))} className="text-[9px] font-black text-amber-600 uppercase tracking-widest hover:underline cursor-pointer">
             Full Remaining (PKR {remaining.toLocaleString()})
           </button>
         )}
@@ -471,17 +471,17 @@ function PayPanel({ amount, setAmount, method, setMethod, remaining, onConfirm, 
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Amount (PKR)"
-          className="flex-1 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900 focus:outline-none focus:border-emerald-500"
+          className="flex-1 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900 focus:outline-none focus:border-amber-500"
           autoFocus
         />
         <select
           value={method}
           onChange={(e) => setMethod(e.target.value)}
-          className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-700 focus:outline-none focus:border-emerald-500 appearance-none cursor-pointer"
+          className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-700 focus:outline-none focus:border-amber-500 appearance-none cursor-pointer"
         >
           {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <button onClick={onConfirm} className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer">
+        <button onClick={onConfirm} className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer">
           <CheckCircle2 size={14} /> Confirm Payment
         </button>
         <button onClick={onCancel} className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-600 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer">

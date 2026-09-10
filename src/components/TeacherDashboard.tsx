@@ -4,12 +4,16 @@ import { toast } from 'sonner';
 import { 
   Users, Calendar, Award, CheckSquare, LogOut, Save, UserCheck, UserX, User,
   Clock, AlertCircle, Sparkles, BookOpen, Menu, X, ArrowLeft, ClipboardList, Info, CreditCard,
-  Bell, CheckCircle2, ListTodo, CalendarDays, ArrowRight, Search, PlusCircle, AlertTriangle, ChevronDown, Sun, Moon, Phone, Trash2, Plus, Send, Download, Fingerprint, School, RefreshCw, Printer
+  Bell, CheckCircle2, ListTodo, CalendarDays, ArrowRight, Search, PlusCircle, AlertTriangle, ChevronDown, Sun, Moon, Phone, Trash2, Plus, Send, Download, Fingerprint, School, RefreshCw, Printer,
+  Wallet, Banknote, MapPin, Navigation, Receipt, LocateFixed, Coins, CalendarClock
 } from 'lucide-react';
 import { getNotifications, addNotification, saveNotifications, PortalNotification } from '../lib/notificationUtils';
 import { getPeriodStatus, getStatusColor } from '../lib/periodUtils';
-import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, ExamType, UserSession, FeeRecord, DayOfWeek, Assignment, getStudentPhoto } from '../types';
+import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, ExamType, UserSession, FeeRecord, DayOfWeek, Assignment, TeacherAttendance, TeacherPayConfig, TeacherPayslip, SchoolLocation, getStudentPhoto } from '../types';
 import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
+import { DEFAULT_SCHOOL_LOCATION, getCurrentPosition, haversineMeters, isWithinSchoolRadius, formatDistance } from '../lib/geoUtils';
+import { defaultPayConfig, summarizeTeacherMonth, buildPayslip, monthKeyOf, monthLabel, formatPKR } from '../lib/payEngine';
+import { INITIAL_TEACHER_PAY_CONFIGS, INITIAL_SCHOOL_LOCATION } from '../initialData';
 import { listChanged } from '../lib/dataUtils';
 import { HoldActionWrapper } from './HoldActionWrapper';
 
@@ -36,9 +40,22 @@ interface TeacherDashboardProps {
   onInstallApp: () => void;
 }
 
-type TabType = 'dashboard' | 'students' | 'attendance' | 'marks' | 'timetable' | 'fees' | 'settings' | 'diary';
+type TabType = 'dashboard' | 'students' | 'attendance' | 'marks' | 'timetable' | 'fees' | 'settings' | 'diary' | 'my-attendance' | 'my-pay';
 
 import { safeStorage } from '../lib/safeStorage';
+
+/** localStorage se typed load — demo mode ka primary store. */
+function loadLocalJSON<T>(key: string, fallback: T): T {
+  try {
+    const raw = safeStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(fallback) && (!Array.isArray(parsed) || parsed.length === 0)) return fallback;
+    return (parsed ?? fallback) as T;
+  } catch {
+    return fallback;
+  }
+}
 
 export default function TeacherDashboard({
   userSession,
@@ -342,6 +359,213 @@ export default function TeacherDashboard({
   const [diaryTitle, setDiaryTitle] = useState<string>('');
   const [diaryDescription, setDiaryDescription] = useState<string>('');
   const [diaryDueDate, setDiaryDueDate] = useState<string>(new Date().toISOString().split('T')[0]);
+
+  // ===== TEACHER SELF-ATTENDANCE (GPS check-in/out) + PAY (demo local store) =====
+  const [myTeacherAttendance, setMyTeacherAttendance] = useState<TeacherAttendance[]>(() => loadLocalJSON('acadamis_teacher_attendance', [] as TeacherAttendance[]));
+  const [teacherPayConfigs, setTeacherPayConfigs] = useState<TeacherPayConfig[]>(() => loadLocalJSON('acadamis_teacher_pay_configs', INITIAL_TEACHER_PAY_CONFIGS as TeacherPayConfig[]));
+  const [teacherPaySlips, setTeacherPaySlips] = useState<Record<string, TeacherPayslip>>(() => loadLocalJSON('acadamis_teacher_pay_slips', {} as Record<string, TeacherPayslip>));
+  const [schoolLocation, setSchoolLocation] = useState<SchoolLocation>(() => loadLocalJSON('acadamis_school_location', INITIAL_SCHOOL_LOCATION as SchoolLocation));
+  const [useDemoPosition, setUseDemoPosition] = useState<boolean>(() => loadLocalJSON('acadamis_teacher_use_demo_gps', false));
+  const [selfAttMonth, setSelfAttMonth] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [payMonthSel, setPayMonthSel] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+
+  // Persistence (demo = localStorage only; live = sync layer ko bhi queue)
+  useEffect(() => {
+    safeStorage.setItem('acadamis_teacher_attendance', JSON.stringify(myTeacherAttendance));
+    myTeacherAttendance.forEach(a => sbQueueWrite('teacher_attendance', a.id, a));
+  }, [myTeacherAttendance]);
+  useEffect(() => {
+    safeStorage.setItem('acadamis_teacher_pay_slips', JSON.stringify(teacherPaySlips));
+    Object.entries(teacherPaySlips).forEach(([k, v]) => sbQueueWrite('teacher_pay', k, v));
+  }, [teacherPaySlips]);
+  useEffect(() => { safeStorage.setItem('acadamis_teacher_use_demo_gps', JSON.stringify(useDemoPosition)); }, [useDemoPosition]);
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const myTodayAttendance = React.useMemo(
+    () => myTeacherAttendance.find(r => r.date === todayStr) || null,
+    [myTeacherAttendance, todayStr]
+  );
+
+  const handleTeacherCheckIn = async () => {
+    if (myTodayAttendance?.checkIn) { toast.info('Aap already check-in kar chuke hain.'); return; }
+    let pos: { latitude: number; longitude: number } | null = null;
+    let dist = Number.NaN;
+    if (useDemoPosition) {
+      pos = { latitude: schoolLocation.lat, longitude: schoolLocation.lng };
+      dist = 0;
+    } else {
+      pos = await getCurrentPosition();
+      if (!pos) {
+        setUseDemoPosition(true);
+        toast.error('Device location nahi mili — neeche "Demo GPS (School Location)" tick karke dobara Check-In Try karein.');
+        return;
+      }
+      dist = haversineMeters(schoolLocation.lat, schoolLocation.lng, pos.latitude, pos.longitude);
+      if (dist > schoolLocation.radiusMeters) {
+        toast.error(`Aap school se ${formatDistance(dist)} door hain (radius ${schoolLocation.radiusMeters} m). Attendance sirf school ke andar se mark hoti hai.`);
+        return;
+      }
+    }
+    const now = new Date();
+    const isLate = now.getHours() > 8 || (now.getHours() === 8 && now.getMinutes() >= 31); // 8:30 AM cutoff
+    const rec: TeacherAttendance = {
+      id: `tatt_${teacherId}_${todayStr}`,
+      teacherId,
+      date: todayStr,
+      checkIn: now.toISOString(),
+      checkOut: null,
+      status: isLate ? 'late' : 'present',
+      lat: pos.latitude,
+      lng: pos.longitude,
+      distanceMeters: Math.round(dist || 0),
+      locationVerified: true,
+      note: useDemoPosition ? 'Demo GPS (school location)' : 'Live GPS',
+    };
+    setMyTeacherAttendance([rec, ...myTeacherAttendance.filter(a => a.id !== rec.id)]);
+    addNotification({
+      type: 'attendance_complete',
+      title: `Check-in: ${userSession.name}`,
+      message: `${userSession.name} ne ${now.toLocaleTimeString()} par check-in kiya (${isLate ? 'LATE' : 'On Time'}, ${useDemoPosition ? 'Demo GPS' : formatDistance(Math.round(dist || 0))} school se).`,
+      teacherId: teacherId,
+      classId: '',
+      role: 'all'
+    });
+    toast.success(isLate
+      ? `Check-in ho gaya (${now.toLocaleTimeString()}) — LATE ${useDemoPosition ? '' : '· ' + formatDistance(dist || 0)}`
+      : `Check-in ho gaya (${now.toLocaleTimeString()}) ✅ ${useDemoPosition ? '' : '· ' + formatDistance(dist || 0)}`);
+  };
+
+  const handleTeacherCheckOut = async () => {
+    if (!myTodayAttendance?.checkIn) { toast.info('Pehle Check-In karein, phir Check-Out hoga.'); return; }
+    if (myTodayAttendance.checkOut) { toast.info('Aap already check-out kar chuke hain.'); return; }
+    const now = new Date();
+    let dist = myTodayAttendance.distanceMeters;
+    let pos: { latitude: number; longitude: number } | null = null;
+    if (!useDemoPosition) {
+      pos = await getCurrentPosition();
+      if (pos) dist = Math.round(haversineMeters(schoolLocation.lat, schoolLocation.lng, pos.latitude, pos.longitude));
+    }
+    const updated: TeacherAttendance = {
+      ...myTodayAttendance,
+      checkOut: now.toISOString(),
+      lat: pos?.latitude ?? myTodayAttendance.lat,
+      lng: pos?.longitude ?? myTodayAttendance.lng,
+      distanceMeters: dist,
+    };
+    setMyTeacherAttendance(myTeacherAttendance.map(a => a.id === updated.id ? updated : a));
+    addNotification({
+      type: 'attendance_complete',
+      title: `Check-out: ${userSession.name}`,
+      message: `${userSession.name} ne ${now.toLocaleTimeString()} par check-out kiya. Din mukammal ✔`,
+      teacherId: teacherId,
+      classId: '',
+      role: 'all'
+    });
+    toast.success(`Check-out ho gaya (${now.toLocaleTimeString()}) — din mukammal ✅`);
+  };
+
+  // Monthly self-attendance calendar
+  const [selfAttYear, selfAttMonthIdx] = React.useMemo(() => {
+    const parts = selfAttMonth.split('-').map(Number) as [number, number];
+    return [parts[0], parts[1] - 1] as [number, number];
+  }, [selfAttMonth]);
+
+  const selfAttGrid: (number | null)[] = React.useMemo(() => {
+    const first = new Date(selfAttYear, selfAttMonthIdx, 1);
+    const startDow = (first.getDay() + 6) % 7; // Monday-first
+    const dim = new Date(selfAttYear, selfAttMonthIdx + 1, 0).getDate();
+    const cells: (number | null)[] = [];
+    for (let i = 0; i < startDow; i++) cells.push(null);
+    for (let d = 1; d <= dim; d++) cells.push(d);
+    return cells;
+  }, [selfAttYear, selfAttMonthIdx]);
+
+  const statusOnDate = React.useCallback((dateStr: string) => {
+    const r = myTeacherAttendance.find(x => x.date === dateStr);
+    return r ? r.status : null;
+  }, [myTeacherAttendance]);
+
+  const selfAttSummary = React.useMemo(
+    () => summarizeTeacherMonth(myTeacherAttendance, teacherId, selfAttYear, selfAttMonthIdx),
+    [myTeacherAttendance, teacherId, selfAttYear, selfAttMonthIdx]
+  );
+
+  // ===== TEACHER PAY =====
+  const myPayConfig = React.useMemo(() => {
+    const found = teacherPayConfigs.find(c => String(c.teacherId) === String(teacherId));
+    return found || defaultPayConfig(teacherId);
+  }, [teacherPayConfigs, teacherId]);
+
+  const [payYear, payMonthIdx] = React.useMemo(() => {
+    const parts = payMonthSel.split('-').map(Number) as [number, number];
+    return [parts[0], parts[1] - 1] as [number, number];
+  }, [payMonthSel]);
+
+  const myPayslip = React.useMemo(
+    () => buildPayslip(teacherProfile, myPayConfig, myTeacherAttendance, payYear, payMonthIdx, teacherPaySlips),
+    [teacherProfile, myPayConfig, myTeacherAttendance, payYear, payMonthIdx, teacherPaySlips]
+  );
+
+  const printPayslip = () => {
+    const t = teacherProfile;
+    if (!t) return;
+    const s = myPayslip;
+    const rows =
+      `<tr><td class="lbl">Base Salary</td><td class="amt">${formatPKR(s.baseSalary)}</td></tr>
+      <tr><td class="lbl">Present Days (${s.presentDays}) × Daily Bonus</td><td class="amt">+ ${formatPKR(s.presentBonus)}</td></tr>
+      <tr><td class="lbl">Allowances</td><td class="amt">+ ${formatPKR(s.allowances)}</td></tr>
+      <tr><td class="lbl">Late Deduction (${s.lateDays} day)</td><td class="amt">- ${formatPKR(s.lateDeduction)}</td></tr>
+      <tr><td class="lbl">Absent Deduction (${s.absentDays} day)</td><td class="amt">- ${formatPKR(s.absentDeduction)}</td></tr>
+      ${s.fixedDeductions > 0 ? `<tr><td class="lbl">Fixed Deductions</td><td class="amt">- ${formatPKR(s.fixedDeductions)}</td></tr>` : ''}`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Payslip - ${t.name}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', Arial, sans-serif; color:#0f172a; margin:0; padding:32px; }
+    .slip { max-width:720px; margin:0 auto; border:2px solid #0d9488; border-radius:16px; overflow:hidden; }
+    .head { background:linear-gradient(90deg,#0d9488,#14b8a6); color:#fff; padding:22px 26px; display:flex; justify-content:space-between; align-items:center; }
+    .head h1 { margin:0; font-size:20px; }
+    .head .pct { text-align:right; }
+    .head .pct .big { font-size:30px; font-weight:900; }
+    .head .pct .lbl { font-size:10px; text-transform:uppercase; letter-spacing:.15em; opacity:.85; }
+    .meta { display:flex; gap:20px; padding:16px 26px; border-bottom:1px solid #e2e8f0; font-size:13px; }
+    .meta b { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:#64748b; margin-bottom:2px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    .lbl { padding:10px 20px; color:#334155; }
+    .amt { padding:10px 20px; text-align:right; font-weight:700; }
+    .tot td { padding:13px 20px; font-weight:900; background:#0f766e; color:#fff; }
+    .foot { padding:14px 26px; font-size:11px; color:#94a3b8; display:flex; justify-content:space-between; }
+  </style></head><body>
+  <div class="slip">
+    <div class="head">
+      <div><h1>${t.name}</h1><div style="font-size:12px;opacity:.9;text-transform:uppercase;letter-spacing:.1em;">${t.subject} · Payslip</div></div>
+      <div class="pct"><div class="lbl">Net Payable</div><div class="big">${formatPKR(s.netPay)}</div><div style="font-size:11px;opacity:.85;">${monthLabel(s.year, s.month)}</div></div>
+    </div>
+    <div class="meta">
+      <div><b>Period</b>${monthLabel(s.year, s.month)}</div>
+      <div><b>Present</b>${s.presentDays}</div>
+      <div><b>Late</b>${s.lateDays}</div>
+      <div><b>Absent</b>${s.absentDays}</div>
+      <div><b>Leave</b>${s.leaveDays}</div>
+      <div><b>Status</b>${s.paid ? 'PAID' : 'PENDING'}</div>
+    </div>
+    <table>${rows}</table>
+    <table><tr class="tot"><td>Net Payable</td><td style="text-align:right">${formatPKR(s.netPay)}</td></tr></table>
+    <div class="foot"><span>NSB1 School — Digital Registrar</span><span>Generated: ${new Date().toLocaleString()}</span></div>
+  </div>
+  <script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script>
+  </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { toast.error('Pop-up blocked. Allow pop-ups to print payslip.'); return; }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  };
 
   // Memoized Data & Optimized Lookups for performance
   const studentsMap = React.useMemo(() => {
@@ -946,7 +1170,7 @@ export default function TeacherDashboard({
           <img src="/logo.png" alt="NSB1 Logo" className="h-10 w-auto object-contain" referrerPolicy="no-referrer" />
           <div>
             <h1 className="font-black text-gray-900 tracking-tight uppercase text-lg leading-none">NSB1 School</h1>
-            <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-[0.2em] mt-0.5">Faculty Hub</p>
+            <p className="text-[10px] font-bold text-teal-600 uppercase tracking-[0.2em] mt-0.5">Faculty Hub</p>
           </div>
         </div>
         <div className="flex items-center gap-2 relative">
@@ -1010,7 +1234,7 @@ export default function TeacherDashboard({
           </div>
           <div className="text-center w-full">
             <h1 className="text-slate-900 font-black text-sm tracking-widest uppercase leading-none">NSB1 School</h1>
-            <p className="text-indigo-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Faculty Hub</p>
+            <p className="text-teal-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Faculty Hub</p>
           </div>
         </div>
 
@@ -1023,6 +1247,8 @@ export default function TeacherDashboard({
               { id: 'marks', label: 'Marks', icon: Award, action: () => handleEnterMarksTab(selectedMarkClassId || classes[0]?.id || '', selectedSubject, selectedExamType) },
               { id: 'diary', label: 'Diary', icon: ClipboardList },
               { id: 'timetable', label: 'Time Table', icon: Calendar },
+              { id: 'my-attendance', label: 'My Attendance', icon: MapPin },
+              { id: 'my-pay', label: 'My Pay', icon: Wallet },
               { id: 'settings', label: 'Settings', icon: Sparkles }
             ].map((item) => (
               <button
@@ -1034,7 +1260,7 @@ export default function TeacherDashboard({
                 }}
                 className={`w-full flex items-center gap-3 px-4 py-3 text-xs font-black uppercase tracking-widest text-left transition-all rounded-xl ${
                   activeTab === item.id 
-                    ? 'bg-gradient-to-r from-indigo-600 to-violet-600 shadow-lg shadow-indigo-100 text-white' 
+                    ? 'bg-gradient-to-r from-teal-600 to-teal-600 shadow-lg shadow-teal-100 text-white' 
                     : 'text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -1046,9 +1272,9 @@ export default function TeacherDashboard({
             {/* Install Button in Teacher Sidebar */}
             <button
               onClick={onInstallApp}
-              className="w-full flex items-center gap-3 px-4 py-3 text-xs font-black uppercase tracking-widest text-left transition-all bg-indigo-50 text-indigo-700 hover:bg-indigo-100 mt-2 border border-indigo-100 rounded-xl"
+              className="w-full flex items-center gap-3 px-4 py-3 text-xs font-black uppercase tracking-widest text-left transition-all bg-teal-50 text-teal-700 hover:bg-teal-100 mt-2 border border-teal-100 rounded-xl"
             >
-              <Download size={14} className="text-indigo-600" />
+              <Download size={14} className="text-teal-600" />
               Install App
             </button>
           </nav>
@@ -1056,7 +1282,7 @@ export default function TeacherDashboard({
         {/* Minimalist Profile section */}
         <div className="p-6 border-t border-slate-100">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-600 to-violet-600 flex items-center justify-center text-white font-black text-xs shadow-md shadow-indigo-100">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-teal-600 to-teal-600 flex items-center justify-center text-white font-black text-xs shadow-md shadow-teal-100">
               <User size={14} />
             </div>
             <div className="truncate">
@@ -1127,7 +1353,7 @@ export default function TeacherDashboard({
             {/* Quick Period Simulator */}
             <button
               onClick={handleSimulateNextPeriod}
-              className="px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-xs font-black uppercase tracking-widest rounded-full shadow-md shadow-indigo-200 hover:from-indigo-700 hover:to-violet-700 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
+              className="px-3.5 py-2 bg-gradient-to-r from-teal-600 to-teal-600 text-white text-xs font-black uppercase tracking-widest rounded-full shadow-md shadow-teal-200 hover:from-teal-700 hover:to-teal-700 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
               title="Test class bells and push notifications"
             >
               <Bell size={13} />
@@ -1154,7 +1380,7 @@ export default function TeacherDashboard({
               >
                 <Bell size={16} className="text-slate-600" />
                 {notifications.filter(n => n.isUnread).length > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 bg-indigo-650 text-white font-extrabold text-xs w-4.5 h-4.5 rounded-full flex items-center justify-center border border-white">
+                  <span className="absolute -top-1.5 -right-1.5 bg-teal-600 text-white font-extrabold text-xs w-4.5 h-4.5 rounded-full flex items-center justify-center border border-white">
                     {notifications.filter(n => n.isUnread).length}
                   </span>
                 )}
@@ -1174,7 +1400,7 @@ export default function TeacherDashboard({
                         <span className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">School Bells / Alerts</span>
                         <div className="flex items-center gap-2">
                           {notifications.length > 0 && (
-                            <button onClick={handleMarkAllRead} className="text-xs hover:underline text-indigo-600 font-bold uppercase">Mark Read</button>
+                            <button onClick={handleMarkAllRead} className="text-xs hover:underline text-teal-600 font-bold uppercase">Mark Read</button>
                           )}
                           {notifications.length > 0 && (
                             <span className="text-slate-200">|</span>
@@ -1192,7 +1418,7 @@ export default function TeacherDashboard({
                           notifications.map(notif => (
                             <div 
                               key={notif.id} 
-                              className={`p-3 text-left transition-colors hover:bg-slate-50/50 ${notif.isUnread ? 'bg-indigo-55/10' : ''}`}
+                              className={`p-3 text-left transition-colors hover:bg-slate-50/50 ${notif.isUnread ? 'bg-teal-50/10' : ''}`}
                             >
                               <div className="flex items-start gap-2.5">
                                 <span className="text-xs">
@@ -1201,7 +1427,7 @@ export default function TeacherDashboard({
                                 <div className="space-y-0.5 max-w-[210px] overflow-hidden">
                                   <h4 className="font-extrabold text-xs text-slate-900 leading-tight flex items-center gap-1.5">
                                     <span className="truncate">{notif.title}</span>
-                                    {notif.isUnread && <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-605 shrink-0"></span>}
+                                    {notif.isUnread && <span className="inline-block w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0"></span>}
                                   </h4>
                                   <p className="text-xs text-slate-600 leading-relaxed word-break whitespace-normal break-words">{notif.message}</p>
                                   <span className="text-xs text-slate-450 block font-mono mt-1">{notif.timestamp}</span>
@@ -1221,16 +1447,16 @@ export default function TeacherDashboard({
         
         {/* ========== TEACHER DASHBOARD HOME ========== */}
         {activeTab === 'dashboard' && (
-          <div id="panel-teacher-home" className="space-y-8 animate-fade-in bg-sky-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-sky-100 shadow-inner">
+          <div id="panel-teacher-home" className="space-y-8 animate-fade-in bg-teal-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-teal-100 shadow-inner">
             {/* Header Block */}
-            <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 rounded-3xl shadow-xl shadow-indigo-100 p-6 md:p-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 overflow-hidden relative">
-              <div className="absolute -top-16 -right-16 w-64 h-64 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none"></div>
-              <div className="absolute -bottom-20 -left-10 w-64 h-64 bg-violet-500/20 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="bg-gradient-to-br from-slate-900 via-teal-900 to-slate-900 rounded-3xl shadow-xl shadow-teal-100 p-6 md:p-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 overflow-hidden relative">
+              <div className="absolute -top-16 -right-16 w-64 h-64 bg-teal-500/20 rounded-full blur-3xl pointer-events-none"></div>
+              <div className="absolute -bottom-20 -left-10 w-64 h-64 bg-teal-400/20 rounded-full blur-3xl pointer-events-none"></div>
               <div className="relative z-10">
-                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-indigo-300 mb-1">Welcome back, Faculty</p>
+                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-teal-300 mb-1">Welcome back, Faculty</p>
                 <h1 className="text-xl md:text-2xl font-black text-white tracking-tight font-display uppercase">{userSession.name}</h1>
                 <div className="flex flex-wrap items-center gap-3 mt-3">
-                  <div className="px-2.5 py-1 bg-white/10 text-emerald-300 text-xs font-bold uppercase tracking-wider border border-white/10 rounded-full backdrop-blur-sm">
+                  <div className="px-2.5 py-1 bg-white/10 text-amber-300 text-xs font-bold uppercase tracking-wider border border-white/10 rounded-full backdrop-blur-sm">
                     Faculty Member
                   </div>
                   <div className="w-1 h-1 rounded-full bg-white/30"></div>
@@ -1240,7 +1466,7 @@ export default function TeacherDashboard({
                   {myClasses.some(c => c.classTeacherId === teacherId) && (
                     <>
                       <div className="w-1 h-1 rounded-full bg-white/30"></div>
-                      <span className="text-xs font-bold text-emerald-300 uppercase tracking-tight">
+                      <span className="text-xs font-bold text-amber-300 uppercase tracking-tight">
                         Class Incharge: {myClasses.find(c => c.classTeacherId === teacherId)?.className}
                       </span>
                     </>
@@ -1253,8 +1479,8 @@ export default function TeacherDashboard({
                   const mc = myClasses.find(c => c.classTeacherId === teacherId);
                   return (
                     <div className="relative z-10 p-4 bg-white/10 rounded-2xl border border-white/10 backdrop-blur-sm flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
-                        <UserCheck className="text-emerald-300 shrink-0" size={20} />
+                      <div className="w-10 h-10 rounded-xl bg-amber-500/20 flex items-center justify-center">
+                        <UserCheck className="text-amber-300 shrink-0" size={20} />
                       </div>
                       <div>
                         <h4 className="text-[10px] font-extrabold text-slate-300 uppercase tracking-wider">My Designated Class</h4>
@@ -1268,11 +1494,11 @@ export default function TeacherDashboard({
 
             {/* ========== DAILY REMINDER & AGENDA PORTAL ========== */}
             <div id="daily-reminder-board" className="bg-white border border-slate-200 shadow-sm rounded-3xl p-6 space-y-5 relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-50/40 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+              <div className="absolute top-0 right-0 w-32 h-32 bg-teal-50/40 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
               
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-100 pb-4 relative z-10">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-150">
+                  <div className="p-2 bg-teal-50 text-teal-600 rounded-xl border border-teal-100">
                     <Bell size={20} className="animate-pulse" />
                   </div>
                   <div>
@@ -1280,7 +1506,7 @@ export default function TeacherDashboard({
                       Daily Reminder & Agenda (Daily Tasks)
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Operational checklist for <strong className="text-slate-700">{currentDayName}</strong> based on active date: <span className="font-mono text-indigo-600 font-bold">{attendanceDate}</span>
+                      Operational checklist for <strong className="text-slate-700">{currentDayName}</strong> based on active date: <span className="font-mono text-teal-600 font-bold">{attendanceDate}</span>
                     </p>
                   </div>
                 </div>
@@ -1295,7 +1521,7 @@ export default function TeacherDashboard({
                       ⚠️ {pendingCount} Pending Roll Call{pendingCount > 1 ? 's' : ''}
                     </span>
                   ) : (
-                    <span className="bg-emerald-600 text-white font-extrabold px-2.5 py-1 uppercase tracking-wider flex items-center gap-1.5">
+                    <span className="bg-amber-600 text-white font-extrabold px-2.5 py-1 uppercase tracking-wider flex items-center gap-1.5">
                       <CheckCircle2 size={12} /> Ready & Cleared
                     </span>
                   )}
@@ -1307,10 +1533,10 @@ export default function TeacherDashboard({
                 <div className="lg:col-span-7 space-y-3.5 border-r border-slate-100 pr-0 lg:pr-6">
                   <div className="flex justify-between items-center">
                     <h3 className="text-xs font-black uppercase text-slate-900 tracking-wider flex items-center gap-1.5">
-                      <CalendarDays size={14} className="text-indigo-600" />
+                      <CalendarDays size={14} className="text-teal-600" />
                       Class Lectures scheduled today ({todayClasses.length})
                     </h3>
-                    <span className="text-xs text-indigo-500 font-bold uppercase tracking-wider">Timetabled Lectures</span>
+                    <span className="text-xs text-teal-500 font-bold uppercase tracking-wider">Timetabled Lectures</span>
                   </div>
 
                   {todayClasses.length === 0 ? (
@@ -1328,20 +1554,20 @@ export default function TeacherDashboard({
                           <div key={lecture.id} className="bg-slate-50 hover:bg-slate-100/80 border border-slate-150 p-3 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 transition-colors rounded-xl">
                             <div className="space-y-1">
                               <div className="flex items-center gap-2">
-                                <span className="bg-indigo-100 text-indigo-800 text-xs font-black uppercase tracking-wider px-2 py-0.5 font-mono">
+                                <span className="bg-teal-100 text-teal-800 text-xs font-black uppercase tracking-wider px-2 py-0.5 font-mono">
                                   {lecture.period}
                                 </span>
                                 <h4 className="text-xs font-black uppercase text-slate-800 flex items-center gap-1">
                                   🏫 {getClassLabel(lecture.classId)}
                                 </h4>
                                 {isMentor && (
-                                  <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-100 px-1.5 py-0.5 font-bold">
+                                  <span className="text-xs bg-amber-50 text-amber-700 border border-amber-100 px-1.5 py-0.5 font-bold">
                                     Primary Mentor
                                   </span>
                                 )}
                               </div>
                               <p className="text-xs text-slate-600 font-bold">
-                                Subject: <span className="text-indigo-900">{lecture.subject}</span>
+                                Subject: <span className="text-teal-900">{lecture.subject}</span>
                               </p>
                             </div>
 
@@ -1362,19 +1588,19 @@ export default function TeacherDashboard({
                   <div className="space-y-3.5">
                     <div className="flex justify-between items-center">
                       <h3 className="text-xs font-black uppercase text-slate-900 tracking-wider flex items-center gap-1.5">
-                        <ListTodo size={14} className="text-emerald-600" />
+                        <ListTodo size={14} className="text-amber-600" />
                         Today's Attendance Checklist ({attendanceStatusList.length})
                       </h3>
                       <div className="flex items-center gap-3">
                         <div className="flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                          <span className="w-2 h-2 rounded-full bg-amber-500"></span>
                           <span className="text-xs font-black uppercase text-slate-500">Total P: {attendanceStatusList.reduce((acc, curr) => acc + curr.presentCount, 0)}</span>
                         </div>
                         <div className="flex items-center gap-1.5">
                           <span className="w-2 h-2 rounded-full bg-rose-500"></span>
                           <span className="text-xs font-black uppercase text-slate-500">Total A: {attendanceStatusList.reduce((acc, curr) => acc + curr.absentCount, 0)}</span>
                         </div>
-                        <span className="text-xs text-emerald-600 font-bold uppercase tracking-wider">Verification Task</span>
+                        <span className="text-xs text-amber-600 font-bold uppercase tracking-wider">Verification Task</span>
                       </div>
                     </div>
 
@@ -1389,7 +1615,7 @@ export default function TeacherDashboard({
                             key={item.classId} 
                             className={`p-3.5 border transition-all flex justify-between items-center rounded-xl ${
                               item.marked 
-                                ? 'bg-emerald-50/40 border-emerald-100/70 text-slate-700' 
+                                ? 'bg-amber-50/40 border-amber-100/70 text-slate-700' 
                                 : 'bg-rose-50/50 border-rose-100/70 text-slate-900'
                             }`}
                           >
@@ -1399,7 +1625,7 @@ export default function TeacherDashboard({
                                   Class {item.className}
                                 </h4>
                                 {item.isMentorClass && (
-                                  <span className="text-xs uppercase tracking-wider font-extrabold bg-blue-50 text-blue-600 px-1.5 border border-blue-100">
+                                  <span className="text-xs uppercase tracking-wider font-extrabold bg-teal-50 text-teal-600 px-1.5 border border-teal-100">
                                     My Cohort
                                   </span>
                                 )}
@@ -1409,7 +1635,7 @@ export default function TeacherDashboard({
                                 {item.marked && (
                                   <>
                                     <span className="mx-1">|</span>
-                                    <span className="text-emerald-600 font-bold">P: {item.presentCount}</span>
+                                    <span className="text-amber-600 font-bold">P: {item.presentCount}</span>
                                     <span className="mx-1">|</span>
                                     <span className="text-rose-600 font-bold">A: {item.absentCount}</span>
                                   </>
@@ -1419,7 +1645,7 @@ export default function TeacherDashboard({
 
                             <div className="flex items-center gap-2">
                               {item.marked ? (
-                                <span className="text-xs font-mono font-extrabold text-emerald-700 bg-emerald-100/80 px-2 py-1 uppercase rounded-xl flex items-center gap-1">
+                                <span className="text-xs font-mono font-extrabold text-amber-700 bg-amber-100/80 px-2 py-1 uppercase rounded-xl flex items-center gap-1">
                                   ✓ Logged
                                 </span>
                               ) : (
@@ -1438,7 +1664,7 @@ export default function TeacherDashboard({
                                 className={`text-xs font-extrabold uppercase py-1.5 px-3 transition-all cursor-pointer ${
                                   item.marked
                                     ? 'bg-slate-150 hover:bg-slate-200 text-slate-800'
-                                    : 'bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold shadow-sm'
+                                    : 'bg-amber-600 hover:bg-amber-500 text-white font-extrabold shadow-sm'
                                 }`}
                               >
                                 {item.marked ? 'Re-edit' : 'Take Attendance'}
@@ -1483,7 +1709,7 @@ export default function TeacherDashboard({
                     className={`px-3 py-1.5 text-xs font-black uppercase tracking-widest rounded-full border transition-all cursor-pointer ${
                       timetableDayFilter === day
                         ? day === 'all'
-                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
+                          ? 'bg-teal-600 text-white border-teal-600 shadow-md'
                           : 'bg-amber-500 text-white border-amber-500 shadow-md'
                         : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
                     }`}
@@ -1504,7 +1730,7 @@ export default function TeacherDashboard({
                   return (
                     <div key={day} className="animate-fade-in">
                       <div className="flex items-center gap-3 mb-3">
-                        <span className="text-xs font-black text-slate-900 uppercase tracking-[0.2em] bg-indigo-600 text-white px-2 py-0.5">{day}</span>
+                        <span className="text-xs font-black text-slate-900 uppercase tracking-[0.2em] bg-teal-600 text-white px-2 py-0.5">{day}</span>
                         <div className="h-px flex-1 bg-slate-100"></div>
                       </div>
                       <div className="grid grid-cols-2 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-3">
@@ -1542,9 +1768,9 @@ export default function TeacherDashboard({
                   handleEnterAttendanceTab(classId || myClasses[0]?.id || '', attendanceDate);
                   handleTabChange('attendance');
                 }}
-                className="bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md hover:border-emerald-300 hover:-translate-y-0.5 transition-all cursor-pointer group"
+                className="bg-white p-6 rounded-2xl border border-amber-100 shadow-sm hover:shadow-md hover:border-amber-300 hover:-translate-y-0.5 transition-all cursor-pointer group"
               >
-                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white flex items-center justify-center mb-4 shadow-lg shadow-emerald-100 group-hover:scale-110 transition-transform">
+                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 text-white flex items-center justify-center mb-4 shadow-lg shadow-amber-100 group-hover:scale-110 transition-transform">
                   <CheckSquare size={20} />
                 </div>
                 <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide font-display">Mark Attendance</h3>
@@ -1556,9 +1782,9 @@ export default function TeacherDashboard({
                   handleEnterMarksTab(classId || myClasses[0]?.id || '', selectedSubject, selectedExamType);
                   handleTabChange('marks');
                 }}
-                className="bg-white p-6 rounded-2xl border border-indigo-100 shadow-sm hover:shadow-md hover:border-indigo-300 hover:-translate-y-0.5 transition-all cursor-pointer group"
+                className="bg-white p-6 rounded-2xl border border-teal-100 shadow-sm hover:shadow-md hover:border-teal-300 hover:-translate-y-0.5 transition-all cursor-pointer group"
               >
-                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white flex items-center justify-center mb-4 shadow-lg shadow-indigo-100 group-hover:scale-110 transition-transform">
+                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-teal-500 to-teal-600 text-white flex items-center justify-center mb-4 shadow-lg shadow-teal-100 group-hover:scale-110 transition-transform">
                   <Award size={20} />
                 </div>
                 <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide font-display">Configure Scores</h3>
@@ -1632,7 +1858,7 @@ export default function TeacherDashboard({
                           toast.success('Password updated successfully! Next login requires new credentials.');
                           setShowPasswordModal(false);
                         }}
-                        className="w-full bg-indigo-600 text-white font-black uppercase tracking-widest py-3 rounded-xl hover:bg-indigo-700 transition-all text-xs"
+                        className="w-full bg-teal-600 text-white font-black uppercase tracking-widest py-3 rounded-xl hover:bg-teal-700 transition-all text-xs"
                       >
                         Commit Changes
                       </button>
@@ -1645,7 +1871,7 @@ export default function TeacherDashboard({
             {/* Quick Summary overview info */}
             <div className="bg-white text-slate-600 rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
               <div className="flex items-center gap-3">
-                <Info size={18} className="text-emerald-600 shrink-0" />
+                <Info size={18} className="text-amber-600 shrink-0" />
                 <p className="text-xs text-slate-500 font-sans">
                   You are editing simulated data. This app uses <strong>Indexed Storage (localStorage)</strong>. You can safely simulate different dates, record marks, and re-login as a student to see the changes update in real time.
                 </p>
@@ -1653,13 +1879,13 @@ export default function TeacherDashboard({
             </div>
 
           {/* Quick Diary Card on Home */}
-            <div className="bg-white border border-sky-100 shadow-sm rounded-2xl overflow-hidden">
-              <div className="bg-gradient-to-r from-emerald-600 to-teal-700 px-5 py-4 flex items-center justify-between">
+            <div className="bg-white border border-teal-100 shadow-sm rounded-2xl overflow-hidden">
+              <div className="bg-gradient-to-r from-amber-600 to-teal-700 px-5 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-2.5 text-white">
                   <ClipboardList size={18} />
                   <div>
                     <h3 className="text-sm font-black uppercase tracking-widest leading-none">Quick Diary</h3>
-                    <p className="text-[10px] font-bold text-emerald-100 mt-1 uppercase tracking-wider">Post an assignment to your class students</p>
+                    <p className="text-[10px] font-bold text-amber-100 mt-1 uppercase tracking-wider">Post an assignment to your class students</p>
                   </div>
                 </div>
                 <button
@@ -1677,7 +1903,7 @@ export default function TeacherDashboard({
                     <select
                       value={diaryClassId}
                       onChange={(e) => setDiaryClassId(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg cursor-pointer"
+                      className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg cursor-pointer"
                     >
                       {myClasses.length === 0 && <option value="">No assigned classes</option>}
                       {myClasses.map(c => (
@@ -1692,7 +1918,7 @@ export default function TeacherDashboard({
                       placeholder={teacherSubject || 'e.g. Mathematics'}
                       value={diarySubject}
                       onChange={(e) => setDiarySubject(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg"
+                      className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg"
                     />
                   </div>
                   <div className="space-y-1">
@@ -1701,7 +1927,7 @@ export default function TeacherDashboard({
                       type="date"
                       value={diaryDueDate}
                       onChange={(e) => setDiaryDueDate(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg"
+                      className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg"
                     />
                   </div>
                 </div>
@@ -1713,7 +1939,7 @@ export default function TeacherDashboard({
                     placeholder="e.g. Chapter 5 Exercise Questions"
                     value={diaryTitle}
                     onChange={(e) => setDiaryTitle(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg"
                   />
                 </div>
 
@@ -1724,17 +1950,17 @@ export default function TeacherDashboard({
                     placeholder="Write the assignment details, page numbers, or submission instructions..."
                     value={diaryDescription}
                     onChange={(e) => setDiaryDescription(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg resize-none"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-2.5 text-xs font-bold outline-none transition-all rounded-lg resize-none"
                   />
                 </div>
 
                 <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 flex items-center gap-1.5">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-amber-600 flex items-center gap-1.5">
                     <ClipboardList size={12} /> {myAssignments.length} Posted
                   </span>
                   <button
                     onClick={handleCreateAssignment}
-                    className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-black uppercase tracking-widest shadow-lg shadow-emerald-200 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    className="px-6 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-black uppercase tracking-widest shadow-lg shadow-amber-200 transition-all flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Send size={13} /> Publish Assignment
                   </button>
@@ -1747,7 +1973,7 @@ export default function TeacherDashboard({
 
         {/* ========== STUDENTS ROSTER VIEW ========== */}
         {activeTab === 'students' && (
-          <div id="panel-teacher-students" className="space-y-6 animate-fade-in bg-violet-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-violet-100 shadow-inner">
+          <div id="panel-teacher-students" className="space-y-6 animate-fade-in bg-teal-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-teal-100 shadow-inner">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">My Students Roster</h1>
@@ -1813,7 +2039,7 @@ export default function TeacherDashboard({
                                 setShowProfileModal(true);
                                 setProfileMarkSubject(teacherSubject);
                               }}
-                              className="px-4 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white border border-indigo-100 rounded-lg text-xs font-black uppercase tracking-widest transition-all shadow-sm"
+                              className="px-4 py-1.5 bg-teal-50 text-teal-600 hover:bg-teal-600 hover:text-white border border-teal-100 rounded-lg text-xs font-black uppercase tracking-widest transition-all shadow-sm"
                             >
                               Profile
                             </button>
@@ -1880,7 +2106,7 @@ export default function TeacherDashboard({
                     setAttendanceMode(mode);
                     if (mode === 'swipe') setActiveSwipeIndex(0);
                   }}
-                  className="appearance-none pl-3 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-sm"
+                  className="appearance-none pl-3 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20 cursor-pointer shadow-sm"
                 >
                   <option value="grid">🎴 Student Cards Grid</option>
                   <option value="list">📋 Spreadsheet List</option>
@@ -1909,7 +2135,7 @@ export default function TeacherDashboard({
                           setScratchAttendance(updated);
                           toast.success("Marked all students as Present");
                         }}
-                        className="px-2.5 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all border border-emerald-200"
+                        className="px-2.5 py-1 bg-amber-50 text-amber-700 hover:bg-amber-600 hover:text-white rounded-lg text-xs font-black uppercase tracking-wider transition-all border border-amber-200"
                       >
                         ✅ All Present
                       </button>
@@ -1930,7 +2156,7 @@ export default function TeacherDashboard({
                     <button
                       id="save-attendance-btn-grid"
                       onClick={handleSaveAttendance}
-                      className="flex items-center gap-2 py-2 px-5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold tracking-wide shadow-md transition-all cursor-pointer ml-auto"
+                      className="flex items-center gap-2 py-2 px-5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold tracking-wide shadow-md transition-all cursor-pointer ml-auto"
                     >
                       <Save size={14} />
                       Save & Commit Attendance
@@ -1952,10 +2178,10 @@ export default function TeacherDashboard({
                         <div 
                           key={student.id} 
                           className={`bg-white border rounded-2xl p-4 shadow-sm hover:shadow-md transition-all flex flex-col justify-between relative overflow-hidden ${
-                            status === 'present' ? 'border-emerald-200 bg-emerald-50/10' :
+                            status === 'present' ? 'border-amber-200 bg-amber-50/10' :
                             status === 'absent' ? 'border-rose-200 bg-rose-50/10' :
                             status === 'late' ? 'border-amber-200 bg-amber-50/10' :
-                            'border-indigo-200 bg-indigo-50/10'
+                            'border-teal-200 bg-teal-50/10'
                           }`}
                         >
                           {/* Card Header: Roll & Status Badge */}
@@ -1964,7 +2190,7 @@ export default function TeacherDashboard({
                               Roll #{student.rollNumber}
                             </span>
                             <span className={`px-2 py-0.5 rounded-md text-xs font-black uppercase tracking-wider border ${
-                              status === "present" ? "bg-emerald-600 text-white font-black shadow-xs" : status === "absent" ? "bg-rose-600 text-white font-black shadow-xs animate-pulse" : status === "late" ? "bg-amber-500 text-white font-black shadow-xs" : "bg-blue-600 text-white font-black shadow-xs"
+                              status === "present" ? "bg-amber-600 text-white font-black shadow-xs" : status === "absent" ? "bg-rose-600 text-white font-black shadow-xs animate-pulse" : status === "late" ? "bg-amber-500 text-white font-black shadow-xs" : "bg-teal-600 text-white font-black shadow-xs"
                             }`}>
                               {status.toUpperCase()}
                             </span>
@@ -1977,16 +2203,16 @@ export default function TeacherDashboard({
                                 <img 
                                   src={photoUrl} 
                                   alt={student.name} 
-                                  className="w-20 h-20 rounded-2xl object-cover border-2 border-indigo-200 shadow-md bg-slate-100" 
+                                  className="w-20 h-20 rounded-2xl object-cover border-2 border-teal-200 shadow-md bg-slate-100" 
                                 />
                               ) : (
-                                <div className="w-20 h-20 rounded-2xl border-2 border-indigo-200 bg-slate-50 shadow-inner mx-auto" />
+                                <div className="w-20 h-20 rounded-2xl border-2 border-teal-200 bg-slate-50 shadow-inner mx-auto" />
                               )}
                               <span className={`absolute -bottom-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs text-white font-bold border-2 border-white shadow-xs ${
-                                status === 'present' ? 'bg-emerald-500' :
+                                status === 'present' ? 'bg-amber-500' :
                                 status === 'absent' ? 'bg-rose-500' :
                                 status === 'late' ? 'bg-amber-500' :
-                                'bg-indigo-500'
+                                'bg-teal-500'
                               }`}>
                                 {status === 'present' ? 'P' : status === 'absent' ? 'A' : status === 'late' ? 'L' : 'LV'}
                               </span>
@@ -1998,7 +2224,7 @@ export default function TeacherDashboard({
                             <div className="mt-2 flex justify-center">
                               <span className={`px-2 py-0.5 rounded text-xs font-black uppercase tracking-widest border ${
                                 isPaid 
-                                  ? 'bg-emerald-50 text-emerald-600 border-emerald-200' 
+                                  ? 'bg-amber-50 text-amber-600 border-amber-200' 
                                   : 'bg-amber-50 text-amber-600 border-amber-200'
                               }`}>
                                 {isPaid ? 'Fee Paid' : 'Fee Pending'}
@@ -2015,10 +2241,10 @@ export default function TeacherDashboard({
                                 onClick={() => handleSetStatus(student.id, st)}
                                 className={`py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
                                   status === st
-                                    ? st === 'present' ? 'bg-emerald-600 text-white shadow-sm' :
+                                    ? st === 'present' ? 'bg-amber-600 text-white shadow-sm' :
                                       st === 'absent' ? 'bg-rose-600 text-white shadow-sm' :
                                       st === 'late' ? 'bg-amber-500 text-white shadow-sm' :
-                                      'bg-indigo-600 text-white shadow-sm'
+                                      'bg-teal-600 text-white shadow-sm'
                                     : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-900'
                                 }`}
                               >
@@ -2041,7 +2267,7 @@ export default function TeacherDashboard({
                   <div className="p-4 bg-white border border-slate-200 rounded-2xl flex justify-end shadow-xs">
                     <button
                       onClick={handleSaveAttendance}
-                      className="flex items-center gap-2 py-2.5 px-6 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold tracking-wide shadow-md transition-all cursor-pointer"
+                      className="flex items-center gap-2 py-2.5 px-6 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold tracking-wide shadow-md transition-all cursor-pointer"
                     >
                       <Save size={14} />
                       Commit and Save Attendance Logs
@@ -2092,7 +2318,7 @@ export default function TeacherDashboard({
                                             }}
                                             className={`px-1.5 py-0.5 rounded-xl text-[10px] font-black uppercase tracking-tighter border transition-all ${
                                               isPaid 
-                                                ? 'bg-emerald-50 text-emerald-600 border-emerald-100' 
+                                                ? 'bg-amber-50 text-amber-600 border-amber-100' 
                                                 : 'bg-amber-50 text-amber-600 border-amber-100 animate-pulse'
                                             }`}
                                           >
@@ -2114,7 +2340,7 @@ export default function TeacherDashboard({
                                       onClick={() => handleSetStatus(student.id, st)}
                                       className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
                                         status === st
-                                          ? st === "present" ? "bg-emerald-600 text-white font-bold shadow-md" : st === "absent" ? "bg-rose-600 text-white font-bold shadow-md animate-pulse" : st === "late" ? "bg-amber-500 text-white font-bold shadow-md" : "bg-blue-600 text-white font-bold shadow-md"
+                                          ? st === "present" ? "bg-amber-600 text-white font-bold shadow-md" : st === "absent" ? "bg-rose-600 text-white font-bold shadow-md animate-pulse" : st === "late" ? "bg-amber-500 text-white font-bold shadow-md" : "bg-teal-600 text-white font-bold shadow-md"
                                           : 'text-gray-400 hover:text-gray-900 hover:bg-white'
                                       }`}
                                     >
@@ -2142,7 +2368,7 @@ export default function TeacherDashboard({
                     <button
                       id="save-attendance-btn"
                       onClick={handleSaveAttendance}
-                      className="flex items-center gap-2 py-2 px-5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold tracking-wide shadow-sm transition-all cursor-pointer"
+                      className="flex items-center gap-2 py-2 px-5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold tracking-wide shadow-sm transition-all cursor-pointer"
                     >
                       <Save size={14} />
                       Commit and Save Attendance Logs
@@ -2164,14 +2390,14 @@ export default function TeacherDashboard({
                           {/* Progress indicators */}
                           <div className="flex justify-between items-center text-xs text-slate-600 font-bold px-1">
                             <span>Student {activeSwipeIndex + 1} of {viewClassStudents.length}</span>
-                            <span className="font-mono bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full text-xs font-bold border border-indigo-100">
+                            <span className="font-mono bg-teal-50 text-teal-700 px-2.5 py-0.5 rounded-full text-xs font-bold border border-teal-100">
                               {Math.round((activeSwipeIndex / viewClassStudents.length) * 100)}% Complete
                             </span>
                           </div>
                           
                           <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
                             <div 
-                              className="bg-indigo-600 h-full transition-all duration-300 rounded-full" 
+                              className="bg-teal-600 h-full transition-all duration-300 rounded-full" 
                               style={{ width: `${((activeSwipeIndex + 1) / viewClassStudents.length) * 100}%` }}
                             ></div>
                           </div>
@@ -2213,7 +2439,7 @@ export default function TeacherDashboard({
                                     <span className="font-mono text-xs font-bold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200">
                                       Roll #{currentStudent.rollNumber}
                                     </span>
-                                    <span className="text-xs text-indigo-600 font-bold uppercase tracking-wider bg-indigo-50 px-2 py-0.5 rounded-md">
+                                    <span className="text-xs text-teal-600 font-bold uppercase tracking-wider bg-teal-50 px-2 py-0.5 rounded-md">
                                       👈 Swipe Left (A) | Swipe Right (P) 👉
                                     </span>
                                   </div>
@@ -2224,10 +2450,10 @@ export default function TeacherDashboard({
                                         <img 
                                           src={photoUrl} 
                                           alt={currentStudent.name} 
-                                          className="w-24 h-24 rounded-2xl object-cover border-2 border-indigo-200 shadow-md bg-slate-100" 
+                                          className="w-24 h-24 rounded-2xl object-cover border-2 border-teal-200 shadow-md bg-slate-100" 
                                         />
                                       ) : (
-                                        <div className="w-24 h-24 rounded-2xl border-2 border-indigo-200 bg-slate-50 shadow-inner mx-auto" />
+                                        <div className="w-24 h-24 rounded-2xl border-2 border-teal-200 bg-slate-50 shadow-inner mx-auto" />
                                       )}
                                     </div>
                                     <h3 className="text-lg font-black text-slate-900 tracking-tight leading-tight">{currentStudent.name}</h3>
@@ -2241,7 +2467,7 @@ export default function TeacherDashboard({
                                     👈 ABSENT
                                   </div>
                                   <span className="text-slate-400 text-xs uppercase font-semibold">Or tap buttons</span>
-                                  <div className="text-emerald-600 font-black flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded-lg border border-emerald-100">
+                                  <div className="text-amber-600 font-black flex items-center gap-1 bg-amber-50 px-2 py-1 rounded-lg border border-amber-100">
                                     PRESENT 👉
                                   </div>
                                 </div>
@@ -2260,10 +2486,10 @@ export default function TeacherDashboard({
                                   setActiveSwipeIndex(idx => idx + 1);
                                 }}
                                 className={`py-3 text-xs font-black tracking-wider uppercase text-center rounded-xl transition-all border shadow-xs cursor-pointer ${
-                                  st === 'present' ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-600 hover:text-white' :
+                                  st === 'present' ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-600 hover:text-white' :
                                   st === 'absent' ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-600 hover:text-white' :
                                   st === 'late' ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-600 hover:text-white' :
-                                  'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-600 hover:text-white'
+                                  'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-600 hover:text-white'
                                 }`}
                               >
                                 {st === 'present' ? '✅ Present' : st === 'absent' ? '❌ Absent' : st === 'late' ? '⏰ Late' : '📄 Leave'}
@@ -2287,7 +2513,7 @@ export default function TeacherDashboard({
                   ) : (
                     /* Swiped roster collection complete */
                     <div className="bg-white border border-slate-200 p-8 text-center rounded-3xl shadow-lg max-w-sm w-full space-y-6">
-                      <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-2xl mx-auto shadow-inner">
+                      <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-2xl mx-auto shadow-inner">
                         ✓
                       </div>
                       <div>
@@ -2298,8 +2524,8 @@ export default function TeacherDashboard({
                       {/* Summary statistics */}
                       <div className="grid grid-cols-2 gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100 text-center">
                         <div>
-                          <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider font-mono">Present</p>
-                          <span className="text-2xl font-black text-emerald-800">
+                          <p className="text-xs font-bold text-amber-600 uppercase tracking-wider font-mono">Present</p>
+                          <span className="text-2xl font-black text-amber-700">
                             {Object.values(scratchAttendance).filter(v => v === 'present').length}
                           </span>
                         </div>
@@ -2315,7 +2541,7 @@ export default function TeacherDashboard({
                         <button
                           type="button"
                           onClick={handleSaveAttendance}
-                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
+                          className="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
                         >
                           <Save size={16} /> Save & Commit Attendance
                         </button>
@@ -2339,13 +2565,13 @@ export default function TeacherDashboard({
             {(() => {
               const absentsList = viewClassStudents.filter(student => scratchAttendance[student.id] === 'absent');
               return (
-                <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white p-5 rounded-xl border-l-4 border-emerald-500 shadow-sm mt-8 space-y-4 font-sans border border-slate-750">
+                <div className="bg-gradient-to-br from-slate-900 to-teal-900 text-white p-5 rounded-xl border-l-4 border-amber-500 shadow-sm mt-8 space-y-4 font-sans border border-slate-750">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <div>
-                      <h3 className="text-xs font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1.5 font-display">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-amber-400 flex items-center gap-1.5 font-display">
                         📢 WhatsApp Absent Alert Center
                       </h3>
-                      <p className="text-xs text-indigo-200">
+                      <p className="text-xs text-teal-200">
                         Prowl through absent registers on active date {attendanceDate} and execute direct manual alerts or auto rule models to parent contacts.
                       </p>
                     </div>
@@ -2364,11 +2590,11 @@ export default function TeacherDashboard({
                           <div key={st.id} className="bg-white/5 border border-white/10 p-3.5 space-y-2 flex flex-col">
                             <div className="flex justify-between items-start border-b border-white/5 pb-2">
                               <h4 className="text-xs font-bold text-white uppercase">{st.name}</h4>
-                              <span className="text-xs font-mono text-indigo-300 font-bold bg-indigo-500/10 px-1.5">Roll: #{st.rollNumber}</span>
+                              <span className="text-xs font-mono text-teal-300 font-bold bg-teal-500/10 px-1.5">Roll: #{st.rollNumber}</span>
                             </div>
                             <div className="pt-1">
                               <p className="text-xs text-slate-400 font-black uppercase tracking-widest">Parent Name</p>
-                              <p className="text-xs text-emerald-400 font-bold uppercase mt-0.5">{st.guardianName || 'Guardian'}</p>
+                              <p className="text-xs text-amber-400 font-bold uppercase mt-0.5">{st.guardianName || 'Guardian'}</p>
                             </div>
                           </div>
                         );
@@ -2388,20 +2614,20 @@ export default function TeacherDashboard({
 
         {/* ========== TEACHER DIARY / ASSIGNMENTS ========== */}
         {activeTab === 'diary' && (
-          <div id="panel-teacher-diary" className="space-y-6 animate-fade-in bg-emerald-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-emerald-100 shadow-inner pb-20">
-            <div className="bg-gradient-to-r from-emerald-600 to-teal-700 p-6 sm:p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-emerald-700/50 rounded-b-2xl text-white">
+          <div id="panel-teacher-diary" className="space-y-6 animate-fade-in bg-amber-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-amber-100 shadow-inner pb-20">
+            <div className="bg-gradient-to-r from-amber-600 to-teal-700 p-6 sm:p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-amber-700/50 rounded-b-2xl text-white">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>
                   <h2 className="text-xl sm:text-2xl font-black tracking-tight font-display uppercase leading-none flex items-center gap-3">
-                    <ClipboardList size={24} className="text-emerald-200 shrink-0" />
+                    <ClipboardList size={24} className="text-amber-200 shrink-0" />
                     Teacher Diary & Assignments
                   </h2>
-                  <p className="text-xs text-emerald-100 font-bold mt-2 uppercase tracking-widest">
+                  <p className="text-xs text-amber-100 font-bold mt-2 uppercase tracking-widest">
                     Post homework instantly — visible only to the students of the selected class.
                   </p>
                 </div>
-                <div className="flex items-center gap-2 bg-emerald-900/40 backdrop-blur-sm px-4 py-2 rounded-xl border border-emerald-400/20 text-xs font-bold">
-                  <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-pulse" />
+                <div className="flex items-center gap-2 bg-amber-900/40 backdrop-blur-sm px-4 py-2 rounded-xl border border-amber-400/20 text-xs font-bold">
+                  <span className="w-2.5 h-2.5 bg-amber-400 rounded-full animate-pulse" />
                   <span>{myAssignments.length} Posted</span>
                 </div>
               </div>
@@ -2410,7 +2636,7 @@ export default function TeacherDashboard({
             {/* Assignment Creation Form */}
             <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-5">
               <div className="flex items-center gap-2 border-b border-slate-100 pb-4">
-                <PlusCircle size={16} className="text-emerald-600" />
+                <PlusCircle size={16} className="text-amber-600" />
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Post New Assignment</h3>
               </div>
 
@@ -2420,7 +2646,7 @@ export default function TeacherDashboard({
                   <select
                     value={diaryClassId}
                     onChange={(e) => setDiaryClassId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl cursor-pointer"
                   >
                     {myClasses.length === 0 && <option value="">No assigned classes</option>}
                     {myClasses.map(c => (
@@ -2436,7 +2662,7 @@ export default function TeacherDashboard({
                     placeholder={teacherSubject || 'e.g. Mathematics'}
                     value={diarySubject}
                     onChange={(e) => setDiarySubject(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl"
                   />
                 </div>
 
@@ -2446,7 +2672,7 @@ export default function TeacherDashboard({
                     type="date"
                     value={diaryDueDate}
                     onChange={(e) => setDiaryDueDate(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl"
                   />
                 </div>
 
@@ -2457,7 +2683,7 @@ export default function TeacherDashboard({
                     placeholder="e.g. Chapter 5 Exercise Questions"
                     value={diaryTitle}
                     onChange={(e) => setDiaryTitle(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl"
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl"
                   />
                 </div>
               </div>
@@ -2469,13 +2695,13 @@ export default function TeacherDashboard({
                   placeholder="Write the assignment details, page numbers, or submission instructions here..."
                   value={diaryDescription}
                   onChange={(e) => setDiaryDescription(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 focus:border-emerald-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl resize-none"
+                  className="w-full bg-slate-50 border border-slate-200 focus:border-amber-500 focus:bg-white p-3 text-xs font-bold outline-none transition-all rounded-xl resize-none"
                 />
               </div>
 
               <button
                 onClick={handleCreateAssignment}
-                className="w-full sm:w-auto px-8 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg shadow-emerald-200 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full sm:w-auto px-8 py-3.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg shadow-amber-200 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Send size={14} /> Publish to Class Diary
               </button>
@@ -2491,7 +2717,7 @@ export default function TeacherDashboard({
 
               {myAssignments.length === 0 ? (
                 <div className="py-14 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white/60">
-                  <ClipboardList size={32} className="mx-auto text-emerald-400 mb-3 opacity-30" />
+                  <ClipboardList size={32} className="mx-auto text-amber-400 mb-3 opacity-30" />
                   <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No assignments posted yet</p>
                   <p className="text-[10px] font-bold text-slate-300 uppercase tracking-wider mt-1">Use the form above to publish homework to your class.</p>
                 </div>
@@ -2506,7 +2732,7 @@ export default function TeacherDashboard({
                         <div className="flex items-start justify-between gap-3">
                           <div className="space-y-1.5 min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[9px] font-black uppercase tracking-widest">
+                              <span className="px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-full text-[9px] font-black uppercase tracking-widest">
                                 {assn.subject}
                               </span>
                               <span className="px-2.5 py-1 bg-slate-50 text-slate-500 border border-slate-200 rounded-full text-[9px] font-black uppercase tracking-widest">
@@ -2527,7 +2753,7 @@ export default function TeacherDashboard({
                           </button>
                         </div>
                         <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-100">
-                          <div className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isOverdue ? 'bg-rose-50 text-rose-600 border border-rose-200' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'}`}>
+                          <div className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isOverdue ? 'bg-rose-50 text-rose-600 border border-rose-200' : 'bg-teal-50 text-teal-600 border border-teal-100'}`}>
                             {isOverdue ? 'Overdue' : `Due: ${assn.dueDate}`}
                           </div>
                           <span className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">
@@ -2545,13 +2771,13 @@ export default function TeacherDashboard({
 
         {/* ========== SUBJECT GRADES MANAGMENT ========== */}
         {activeTab === 'marks' && (
-          <div id="panel-teacher-marks" className="space-y-6 animate-fade-in bg-indigo-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-indigo-100 shadow-inner">
+          <div id="panel-teacher-marks" className="space-y-6 animate-fade-in bg-teal-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-teal-100 shadow-inner">
             {/* Sub-tab Switcher */}
-            <div className="flex flex-wrap bg-white p-1 rounded-xl border border-indigo-200 shadow-sm w-fit gap-1">
+            <div className="flex flex-wrap bg-white p-1 rounded-xl border border-teal-200 shadow-sm w-fit gap-1">
               <button
                 onClick={() => setMarksSubTab('exam')}
                 className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer ${
-                  marksSubTab === 'exam' ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'
+                  marksSubTab === 'exam' ? 'bg-gradient-to-r from-teal-600 to-teal-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'
                 }`}
               >
                 <Award size={14} /> Exam Marks Entry
@@ -2559,7 +2785,7 @@ export default function TeacherDashboard({
               <button
                 onClick={() => setMarksSubTab('report')}
                 className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer ${
-                  marksSubTab === 'report' ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'
+                  marksSubTab === 'report' ? 'bg-gradient-to-r from-teal-600 to-teal-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'
                 }`}
               >
                 <ClipboardList size={14} /> Report Card Builder
@@ -2569,7 +2795,7 @@ export default function TeacherDashboard({
             {/* Quick CTA: New Result Card (setup exam/test + enter marks) — opens a fresh test */}
             <button
               onClick={() => { setCardExamName(''); setCardSubjects([]); setCardObtained({}); setCardStudentId(''); setMarksSubTab('report'); }}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-black uppercase tracking-wider text-sm shadow-md hover:opacity-90 transition-all"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-teal-600 to-teal-600 text-white font-black uppercase tracking-wider text-sm shadow-md hover:opacity-90 transition-all"
             >
               <Plus size={16} /> New Result Card — Setup Exam/Test & Enter Marks
             </button>
@@ -2585,7 +2811,7 @@ export default function TeacherDashboard({
                 </div>
 
                 {/* Configuration Bar */}
-                <div className="bg-white border border-indigo-200 rounded-2xl p-5 shadow-sm space-y-4">
+                <div className="bg-white border border-teal-200 rounded-2xl p-5 shadow-sm space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
                     <div className="space-y-1">
                       <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Class</label>
@@ -2598,7 +2824,7 @@ export default function TeacherDashboard({
                             handleEnterMarksTab(v, selectedSubject, selectedExamType);
                           }
                         }}
-                        className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-500"
+                        className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-teal-500"
                       >
                         <option value="">-- Choose Class --</option>
                         {myClasses.map(cl => (
@@ -2624,7 +2850,7 @@ export default function TeacherDashboard({
                               handleEnterMarksTab(selectedMarkClassId, v, selectedExamType);
                             }
                           }}
-                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-teal-500"
                         >
                           <option value="">-- Choose Subject --</option>
                           {(() => {
@@ -2654,7 +2880,7 @@ export default function TeacherDashboard({
                               }
                             }}
                             placeholder="Type subject name (e.g. Quran, Art)"
-                            className="w-full px-3 py-2 bg-white border border-indigo-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-500"
+                            className="w-full px-3 py-2 bg-white border border-teal-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-teal-500"
                           />
                           <button
                             type="button"
@@ -2675,7 +2901,7 @@ export default function TeacherDashboard({
                         value={examNameDraft}
                         onChange={(e) => setExamNameDraft(e.target.value)}
                         placeholder="e.g. 1st Term / Annual"
-                        className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-indigo-800 focus:outline-none focus:border-indigo-500"
+                        className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-teal-800 focus:outline-none focus:border-teal-500"
                       />
                       <datalist id="teacher-exam-names-list">
                         {EXAM_NAME_OPTIONS.map(opt => <option key={opt} value={opt} />)}
@@ -2689,7 +2915,7 @@ export default function TeacherDashboard({
                         min="1"
                         value={maxMarksInput}
                         onChange={(e) => setMaxMarksInput(Number(e.target.value))}
-                        className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-500"
+                        className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-teal-500"
                       />
                     </div>
 
@@ -2704,7 +2930,7 @@ export default function TeacherDashboard({
                           handleEnterMarksTab(selectedMarkClassId, selectedSubject, exam);
                           toast.success(`Roster loaded for ${exam} — enter marks below`);
                         }}
-                        className="w-full px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
+                        className="w-full px-4 py-2 bg-teal-600 text-white hover:bg-teal-700 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <RefreshCw size={14} /> Load Roster
                       </button>
@@ -2730,7 +2956,7 @@ export default function TeacherDashboard({
                   return (
                     <div className="bg-white border border-slate-200 rounded-2xl p-4 mb-4 space-y-2">
                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                        <Award size={12} className="text-indigo-500" /> Saved Exams — long-press to Edit / Delete
+                        <Award size={12} className="text-teal-500" /> Saved Exams — long-press to Edit / Delete
                       </h4>
                       {savedExams.map(se => {
                         const cls = classes.find(c => c.id === se.classId);
@@ -2757,7 +2983,7 @@ export default function TeacherDashboard({
                                 <p className="text-xs font-black text-slate-800 truncate">{se.exam}</p>
                                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider truncate">{se.subject} · {cls ? `Class ${cls.className}${cls.section ? '-' + cls.section : ''}` : 'Class'}</p>
                               </div>
-                              <span className="text-[10px] font-black text-indigo-600 shrink-0">{se.count} marks</span>
+                              <span className="text-[10px] font-black text-teal-600 shrink-0">{se.count} marks</span>
                             </div>
                           </HoldActionWrapper>
                         );
@@ -2787,11 +3013,11 @@ export default function TeacherDashboard({
 
                   return (
                     <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-xs">
-                      <div className="p-4 sm:p-5 border-b border-gray-100 bg-indigo-50/50 flex flex-wrap items-center justify-between gap-3">
-                        <h3 className="text-sm font-black text-indigo-900 uppercase tracking-widest flex items-center gap-2">
-                          <Award size={16} className="text-indigo-600" /> {selectedExamType} Marks — {selectedSubject}
+                      <div className="p-4 sm:p-5 border-b border-gray-100 bg-teal-50/50 flex flex-wrap items-center justify-between gap-3">
+                        <h3 className="text-sm font-black text-teal-900 uppercase tracking-widest flex items-center gap-2">
+                          <Award size={16} className="text-teal-600" /> {selectedExamType} Marks — {selectedSubject}
                         </h3>
-                        <span className="text-xs font-black text-slate-500 uppercase tracking-wider bg-white border border-indigo-100 px-3 py-1 rounded-full">
+                        <span className="text-xs font-black text-slate-500 uppercase tracking-wider bg-white border border-teal-100 px-3 py-1 rounded-full">
                           {examClassStudents.length} Student(s) · Total {maxMarksInput}
                         </span>
                       </div>
@@ -2807,7 +3033,7 @@ export default function TeacherDashboard({
                             <div key={s.id} className="p-4 bg-white">
                               <div className="flex items-center justify-between gap-3 mb-2.5">
                                 <div className="flex items-center gap-3 min-w-0">
-                                  <span className="text-xs font-black text-indigo-500 w-6 shrink-0">#{idx + 1}</span>
+                                  <span className="text-xs font-black text-teal-500 w-6 shrink-0">#{idx + 1}</span>
                                   <div className="min-w-0">
                                     <h4 className="font-black text-slate-900 uppercase tracking-tight text-xs truncate">{s.name}</h4>
                                     <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mt-0.5">Roll #{s.rollNumber}</p>
@@ -2827,7 +3053,7 @@ export default function TeacherDashboard({
                                       value={scratchMarks[s.id] || ''}
                                       onChange={(e) => setScratchMarks(prev => ({ ...prev, [s.id]: e.target.value.replace(/^0+(?=\d)/, '') }))}
                                       placeholder="0"
-                                      className="w-24 px-3 py-2 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-center font-extrabold text-indigo-900 focus:outline-none focus:border-indigo-500"
+                                      className="w-24 px-3 py-2 bg-teal-50 border border-teal-100 rounded-lg text-sm text-center font-extrabold text-teal-900 focus:outline-none focus:border-teal-500"
                                     />
                                   )}
                                   <span className="text-xs text-slate-400 font-bold">/ {maxMarksInput}</span>
@@ -2859,8 +3085,8 @@ export default function TeacherDashboard({
                               </tr>
                             ) : (
                               examClassStudents.map((s, idx) => (
-                                <tr key={s.id} className="hover:bg-indigo-50/20 transition-colors">
-                                  <td className="px-6 py-3 text-xs font-black text-indigo-500">{idx + 1}</td>
+                                <tr key={s.id} className="hover:bg-teal-50/20 transition-colors">
+                                  <td className="px-6 py-3 text-xs font-black text-teal-500">{idx + 1}</td>
                                   <td className="px-6 py-3 text-xs font-mono font-bold text-slate-500">{s.rollNumber}</td>
                                   <td className="px-6 py-3 font-bold text-slate-900 uppercase tracking-tight">{s.name}</td>
                                   <td className="px-6 py-3 text-center">
@@ -2874,7 +3100,7 @@ export default function TeacherDashboard({
                                         value={scratchMarks[s.id] || ''}
                                         onChange={(e) => setScratchMarks(prev => ({ ...prev, [s.id]: e.target.value.replace(/^0+(?=\d)/, '') }))}
                                         placeholder="0"
-                                        className="w-28 px-3 py-2 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-center font-extrabold text-indigo-900 focus:outline-none focus:border-indigo-500 inline-block"
+                                        className="w-28 px-3 py-2 bg-teal-50 border border-teal-100 rounded-lg text-sm text-center font-extrabold text-teal-900 focus:outline-none focus:border-teal-500 inline-block"
                                       />
                                     )}
                                   </td>
@@ -2888,11 +3114,11 @@ export default function TeacherDashboard({
 
                       <div className="p-4 sm:p-5 border-t border-gray-100 bg-gray-50/50 flex flex-col sm:flex-row items-center justify-between gap-3">
                         <div className="text-xs font-bold text-slate-600 uppercase tracking-widest">
-                          Exam: <span className="text-indigo-700">{selectedExamType}</span> · Subject: <span className="text-indigo-700">{selectedSubject}</span>
+                          Exam: <span className="text-teal-700">{selectedExamType}</span> · Subject: <span className="text-teal-700">{selectedSubject}</span>
                         </div>
                         <button
                           onClick={handleSaveMarks}
-                          className="px-8 py-3 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg text-xs font-black uppercase tracking-wider shadow-md transition-all flex items-center gap-2 cursor-pointer"
+                          className="px-8 py-3 bg-teal-600 text-white hover:bg-teal-700 rounded-lg text-xs font-black uppercase tracking-wider shadow-md transition-all flex items-center gap-2 cursor-pointer"
                         >
                           <Save size={14} /> Save {selectedExamType} Marks
                         </button>
@@ -2920,7 +3146,7 @@ export default function TeacherDashboard({
                       setSelectedMarkClassId(e.target.value);
                       setReportStudentId('');
                     }}
-                    className="px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-500"
+                    className="px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-amber-500"
                   >
                     <option value="">-- Choose Class --</option>
                     {myClasses.map(cl => (
@@ -2935,7 +3161,7 @@ export default function TeacherDashboard({
                     <select
                       value={reportStudentId}
                       onChange={(e) => setReportStudentId(e.target.value)}
-                      className="px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-indigo-800 focus:outline-none focus:border-indigo-500 w-48"
+                      className="px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-teal-800 focus:outline-none focus:border-teal-500 w-48"
                     >
                       <option value="">-- Choose Student --</option>
                       {students.filter(s => s.classId === selectedMarkClassId).map(st => (
@@ -2969,7 +3195,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
               return (
                 <div className="space-y-6">
                   {/* Student + Exam Name Header */}
-                  <div className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white p-4 sm:p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+                  <div className="bg-gradient-to-r from-teal-600 to-teal-600 text-white p-4 sm:p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
                     <div>
                       <p className="text-[10px] uppercase tracking-[0.3em] opacity-80">Report Card For</p>
                       <h3 className="text-lg font-black uppercase tracking-tight leading-tight">{student.name}</h3>
@@ -2988,10 +3214,10 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                   </div>
 
                   {/* Add Subject Config Bar */}
-                  <div className="bg-indigo-50/50 border border-indigo-100/50 rounded-xl p-4 shadow-sm">
+                  <div className="bg-teal-50/50 border border-teal-100/50 rounded-xl p-4 shadow-sm">
                     <div className="flex items-center gap-2 mb-3">
-                      <div className="bg-indigo-100 text-indigo-700 p-1.5 rounded-lg"><Award size={16} /></div>
-                      <h3 className="text-sm font-bold text-indigo-900">Add Subject to Report</h3>
+                      <div className="bg-teal-100 text-teal-700 p-1.5 rounded-lg"><Award size={16} /></div>
+                      <h3 className="text-sm font-bold text-teal-900">Add Subject to Report</h3>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
                       <div className="sm:col-span-3 space-y-1">
@@ -3000,7 +3226,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                           <select
                             value={reportSubjectToAdd}
                             onChange={(e) => setReportSubjectToAdd(e.target.value)}
-                            className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-indigo-500"
+                            className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-teal-500"
                           >
                             <option value="">Select Subject</option>
                             <option value="English">English</option>
@@ -3023,7 +3249,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                               value={reportManualSubject}
                               onChange={(e) => setReportManualSubject(e.target.value)}
                               placeholder="Type subject name (e.g. Quran, Art)"
-                              className="w-full px-3 py-1.5 bg-white border border-indigo-300 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-indigo-500"
+                              className="w-full px-3 py-1.5 bg-white border border-teal-300 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-teal-500"
                             />
                             <button
                               type="button"
@@ -3044,7 +3270,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                           value={reportRefToAdd}
                           onChange={(e) => setReportRefToAdd(e.target.value)}
                           placeholder="e.g. Oxford Book Ch 2, Mid Term"
-                          className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-teal-500"
                         />
                       </div>
                       
@@ -3066,7 +3292,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                             setReportRefToAdd('');
                             toast.success('Subject row added below');
                           }}
-                          className="py-1.5 px-4 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg text-xs font-bold uppercase tracking-wider shadow-sm transition-all flex items-center gap-2"
+                          className="py-1.5 px-4 bg-teal-600 text-white hover:bg-teal-700 rounded-lg text-xs font-bold uppercase tracking-wider shadow-sm transition-all flex items-center gap-2"
                         >
                           <Plus size={14} />
                           Add subject to Report
@@ -3102,7 +3328,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                             setShowProfileModal(true);
                             setProfileMarkSubject(teacherSubject);
                           }}
-                          className="shrink-0 px-3.5 py-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white border border-indigo-100 rounded-lg text-xs font-black uppercase tracking-widest transition-all shadow-sm"
+                          className="shrink-0 px-3.5 py-2 bg-teal-50 text-teal-600 hover:bg-teal-600 hover:text-white border border-teal-100 rounded-lg text-xs font-black uppercase tracking-widest transition-all shadow-sm"
                         >
                           Profile
                         </button>
@@ -3158,7 +3384,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                       newList[index].maxMarks = e.target.value;
                                       setReportSubjectsList(newList);
                                     }}
-                                    className="w-20 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-center font-bold text-slate-700 focus:outline-none focus:border-blue-500 inline-block"
+                                    className="w-20 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-center font-bold text-slate-700 focus:outline-none focus:border-teal-500 inline-block"
                                   />
                                 </td>
                                 <td className="px-6 py-4 text-center">
@@ -3172,7 +3398,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                        setReportSubjectsList(newList);
                                      }}
                                     placeholder="0"
-                                    className="w-20 px-3 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-center font-extrabold text-indigo-900 focus:outline-none focus:border-indigo-500 inline-block"
+                                    className="w-20 px-3 py-1.5 bg-teal-50 border border-teal-100 rounded-lg text-sm text-center font-extrabold text-teal-900 focus:outline-none focus:border-teal-500 inline-block"
                                   />
                                 </td>
                                 <td className="px-4 py-4 text-center">
@@ -3190,15 +3416,15 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                     </div>
                     <div className="border-t border-gray-100 p-4 bg-gray-50/50 flex flex-col sm:flex-row items-center justify-between gap-3">
                       <div className="text-xs font-bold text-slate-600 uppercase tracking-widest">
-                        Total: <span className="text-indigo-700 text-sm">{totalObtained}/{totalMax}</span> ({overallPct}%) ·{' '}
-                        <span className={overallPct >= 40 ? 'text-emerald-600' : 'text-rose-600'}>{overallPct >= 40 ? 'PASS' : 'RE-STUDY'}</span>
+                        Total: <span className="text-teal-700 text-sm">{totalObtained}/{totalMax}</span> ({overallPct}%) ·{' '}
+                        <span className={overallPct >= 40 ? 'text-amber-600' : 'text-rose-600'}>{overallPct >= 40 ? 'PASS' : 'RE-STUDY'}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={handleSaveReport}
                           disabled={reportSubjectsList.length === 0}
-                          className="py-2 px-5 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-xs font-black uppercase tracking-wider shadow-sm transition-all flex items-center gap-2"
+                          className="py-2 px-5 bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-xs font-black uppercase tracking-wider shadow-sm transition-all flex items-center gap-2"
                         >
                           <Save size={14} /> Save Report
                         </button>
@@ -3209,7 +3435,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                   {/* RESULT CARD PREVIEW */}
                   {reportSubjectsList.length > 0 && (
                     <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-                      <div className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-5 py-4 flex items-center justify-between gap-3">
+                      <div className="bg-gradient-to-r from-teal-600 to-teal-600 text-white px-5 py-4 flex items-center justify-between gap-3">
                         <div>
                           <h3 className="text-base font-black uppercase tracking-wide">Result Card</h3>
                           <p className="text-xs opacity-90">{reportExamName.trim() || 'General Assessment'}</p>
@@ -3239,7 +3465,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                 <td className="px-5 py-3 text-xs text-slate-500">{sj.ref}</td>
                                 <td className="px-5 py-3 text-center font-bold text-slate-700">{rob}/{rmax}</td>
                                 <td className="px-5 py-3 text-center">
-                                  <span className={`px-2 py-0.5 rounded-full text-xs font-black ${rpct >= 40 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{rpct}%</span>
+                                  <span className={`px-2 py-0.5 rounded-full text-xs font-black ${rpct >= 40 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{rpct}%</span>
                                 </td>
                               </tr>
                             );
@@ -3249,12 +3475,12 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                           <tr className="bg-slate-50 border-t border-slate-200">
                             <td colSpan={2} className="px-5 py-3 font-black text-slate-900 uppercase text-xs">Total</td>
                             <td className="px-5 py-3 text-center font-black text-slate-900">{totalObtained}/{totalMax}</td>
-                            <td className="px-5 py-3 text-center font-black text-indigo-700">{overallPct}%</td>
+                            <td className="px-5 py-3 text-center font-black text-teal-700">{overallPct}%</td>
                           </tr>
                         </tfoot>
                       </table>
                       <div className="px-5 py-3 flex items-center justify-between bg-white border-t border-slate-100">
-                        <span className={`text-sm font-black uppercase tracking-wider px-3 py-1 rounded-full ${overallPct >= 40 ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'}`}>{overallPct >= 40 ? 'PASS' : 'RE-STUDY'}</span>
+                        <span className={`text-sm font-black uppercase tracking-wider px-3 py-1 rounded-full ${overallPct >= 40 ? 'bg-amber-600 text-white' : 'bg-rose-600 text-white'}`}>{overallPct >= 40 ? 'PASS' : 'RE-STUDY'}</span>
                         <span className="text-xs text-slate-400">Generated from entered marks</span>
                       </div>
                     </div>
@@ -3284,12 +3510,12 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
 
                  {/* Step 1: Class + Exam/Test name */}
                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                   <div className="bg-indigo-50/50 border border-indigo-100/50 rounded-xl p-4 shadow-sm space-y-1">
+                   <div className="bg-teal-50/50 border border-teal-100/50 rounded-xl p-4 shadow-sm space-y-1">
                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Select Class</label>
                      <select
                        value={selectedMarkClassId}
                        onChange={(e) => { setSelectedMarkClassId(e.target.value); setCardStudentId(''); setCardObtained({}); }}
-                       className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-bold text-slate-950 focus:outline-none focus:border-indigo-500"
+                       className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-bold text-slate-950 focus:outline-none focus:border-teal-500"
                      >
                        <option value="">-- Choose Class --</option>
                        {myClasses.map(cl => (
@@ -3297,14 +3523,14 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                        ))}
                      </select>
                    </div>
-                   <div className="bg-indigo-50/50 border border-indigo-100/50 rounded-xl p-4 shadow-sm space-y-1">
+                   <div className="bg-teal-50/50 border border-teal-100/50 rounded-xl p-4 shadow-sm space-y-1">
                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Exam / Test Name</label>
                      <input
                        type="text"
                        value={cardExamName}
                        onChange={(e) => setCardExamName(e.target.value)}
                        placeholder="e.g. 1st Term 2025 / Weekly Test 3"
-                       className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-bold text-slate-950 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500"
+                       className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-bold text-slate-950 placeholder:text-slate-400 focus:outline-none focus:border-teal-500"
                      />
                    </div>
                   </div>
@@ -3314,7 +3540,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                     <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-4 sm:p-5 space-y-3">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <div className="bg-emerald-100 text-emerald-700 p-1.5 rounded-lg"><ClipboardList size={16} /></div>
+                          <div className="bg-amber-100 text-amber-700 p-1.5 rounded-lg"><ClipboardList size={16} /></div>
                           <h3 className="text-sm font-bold text-slate-700">Saved Tests / Exams</h3>
                         </div>
                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Click to open &amp; view marks</span>
@@ -3341,9 +3567,9 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                   const rec = Object.keys(subjMap).map((s, i) => ({ id: 'sv_' + i, subject: s, maxMarks: String(subjMap[s]) }));
                                   setCardExamName(tn); setCardSubjects(rec); setCardStudentId(''); setCardObtained({});
                                   toast.success('Opened saved test: ' + tn);
-                                }} className="text-left bg-emerald-50 border border-emerald-100 hover:bg-emerald-100 text-emerald-800 text-xs font-bold px-3 py-2 rounded-xl flex flex-col gap-0.5">
+                                }} className="text-left bg-amber-50 border border-amber-100 hover:bg-amber-100 text-amber-700 text-xs font-bold px-3 py-2 rounded-xl flex flex-col gap-0.5">
                                   <span>{tn}</span>
-                                  <span className="text-[10px] font-semibold text-emerald-500">{subjCount} subjects · {marked}/{css.length} students</span>
+                                  <span className="text-[10px] font-semibold text-amber-500">{subjCount} subjects · {marked}/{css.length} students</span>
                                 </button>
                               );
                             })}
@@ -3356,14 +3582,14 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                   {/* Step 2: Define subjects of the test */}
                  <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-4 sm:p-5 space-y-4">
                    <div className="flex items-center gap-2">
-                     <div className="bg-indigo-100 text-indigo-700 p-1.5 rounded-lg"><Award size={16} /></div>
-                     <h3 className="text-sm font-bold text-indigo-900">Test Subjects ({cardSubjects.length})</h3>
+                     <div className="bg-teal-100 text-teal-700 p-1.5 rounded-lg"><Award size={16} /></div>
+                     <h3 className="text-sm font-bold text-teal-900">Test Subjects ({cardSubjects.length})</h3>
                    </div>
                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
                      <div className="sm:col-span-5 space-y-1">
                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Subject</label>
                        {cardSubjectToAdd !== 'Other' ? (
-                         <select value={cardSubjectToAdd} onChange={(e) => setCardSubjectToAdd(e.target.value)} className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-indigo-500">
+                         <select value={cardSubjectToAdd} onChange={(e) => setCardSubjectToAdd(e.target.value)} className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-teal-500">
                             <option value="">Select Subject</option>
                             {(() => {
                               const cs = selectedMarkClassId ? (classes.find(c => String(c.id) === String(selectedMarkClassId))?.subjects || []) : [];
@@ -3377,14 +3603,14 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                          </select>
                        ) : (
                          <div className="flex items-center gap-2">
-                           <input type="text" value={cardManualSubject} onChange={(e) => setCardManualSubject(e.target.value)} placeholder="Type subject name" className="w-full px-3 py-1.5 bg-white border border-indigo-300 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-indigo-500" />
+                           <input type="text" value={cardManualSubject} onChange={(e) => setCardManualSubject(e.target.value)} placeholder="Type subject name" className="w-full px-3 py-1.5 bg-white border border-teal-300 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-teal-500" />
                            <button type="button" onClick={() => { setCardManualSubject(''); setCardSubjectToAdd(''); }} className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-lg text-xs font-black">✕</button>
                          </div>
                        )}
                      </div>
                      <div className="sm:col-span-3 space-y-1">
                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Total Marks</label>
-                       <input type="number" min="1" value={cardMaxToAdd} onChange={(e) => setCardMaxToAdd(e.target.value)} placeholder="100" className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-indigo-500" />
+                       <input type="number" min="1" value={cardMaxToAdd} onChange={(e) => setCardMaxToAdd(e.target.value)} placeholder="100" className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-slate-950 focus:outline-none focus:border-teal-500" />
                      </div>
                      <div className="sm:col-span-4 flex justify-end">
                        <button type="button" onClick={() => {
@@ -3394,16 +3620,16 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                          setCardSubjects([...cardSubjects, { id: Date.now().toString(), subject: fSubj, maxMarks: cardMaxToAdd }]);
                          setCardSubjectToAdd(''); setCardManualSubject(''); setCardMaxToAdd('100');
                          toast.success('Subject added to test');
-                       }} className="py-1.5 px-4 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg text-xs font-bold uppercase tracking-wider shadow-sm flex items-center gap-2"><Plus size={14} /> Add Subject</button>
+                       }} className="py-1.5 px-4 bg-teal-600 text-white hover:bg-teal-700 rounded-lg text-xs font-bold uppercase tracking-wider shadow-sm flex items-center gap-2"><Plus size={14} /> Add Subject</button>
                      </div>
                    </div>
 
                    {cardSubjects.length > 0 && (
                      <div className="flex flex-wrap gap-2 pt-1">
                        {cardSubjects.map(sj => (
-                         <span key={sj.id} className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-100 text-indigo-800 text-xs font-bold px-3 py-1.5 rounded-full">
-                           {sj.subject} <span className="text-indigo-400">/ {sj.maxMarks}</span>
-                           <button onClick={() => setCardSubjects(cardSubjects.filter(s => s.id !== sj.id))} className="text-indigo-400 hover:text-rose-600"><Trash2 size={12} /></button>
+                         <span key={sj.id} className="inline-flex items-center gap-2 bg-teal-50 border border-teal-100 text-teal-800 text-xs font-bold px-3 py-1.5 rounded-full">
+                           {sj.subject} <span className="text-teal-400">/ {sj.maxMarks}</span>
+                           <button onClick={() => setCardSubjects(cardSubjects.filter(s => s.id !== sj.id))} className="text-teal-400 hover:text-rose-600"><Trash2 size={12} /></button>
                          </span>
                        ))}
                      </div>
@@ -3451,7 +3677,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                           return `<tr>
                             <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-weight:700;color:#0f172a">${sj.subject}</td>
                             <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:700;color:#334155">${rob} / ${rmax}</td>
-                            <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:700">${rpct}% <span style="font-size:11px;color:${rpct >= 40 ? '#059669' : '#e11d48'}">(${status})</span></td>
+                            <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:700">${rpct}% <span style="font-size:11px;color:${rpct >= 40 ? '#0d9488' : '#e11d48'}">(${status})</span></td>
                           </tr>`;
                         }).join('');
                         const totO = cardSubjects.reduce((a, sj) => a + (Number(cardObtained[sj.id] || '0') || 0), 0);
@@ -3462,8 +3688,8 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
   <style>
     * { box-sizing: border-box; }
     body { font-family: 'Inter', Arial, sans-serif; color:#0f172a; margin:0; padding:32px; }
-    .card { max-width:760px; margin:0 auto; border:2px solid #4f46e5; border-radius:16px; overflow:hidden; }
-    .head { background:linear-gradient(90deg,#4f46e5,#7c3aed); color:#fff; padding:22px 26px; display:flex; justify-content:space-between; align-items:center; }
+    .card { max-width:760px; margin:0 auto; border:2px solid #0d9488; border-radius:16px; overflow:hidden; }
+    .head { background:linear-gradient(90deg,#0d9488,#14b8a6); color:#fff; padding:22px 26px; display:flex; justify-content:space-between; align-items:center; }
     .head h1 { margin:0; font-size:20px; letter-spacing:.04em; text-transform:uppercase; }
     .head .sub { font-size:12px; opacity:.9; margin-top:4px; }
     .head .pct { text-align:right; }
@@ -3507,7 +3733,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                        if (!student) return null;
                        return (
                          <div className="space-y-6">
-                           <div className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white p-4 sm:p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+                           <div className="bg-gradient-to-r from-teal-600 to-teal-600 text-white p-4 sm:p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
                              <div>
                                <p className="text-[10px] uppercase tracking-[0.3em] opacity-80">Entering: {examN}</p>
                                <h3 className="text-lg font-black uppercase tracking-tight">{student.name}</h3>
@@ -3532,7 +3758,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                        <td className="px-6 py-4 font-bold text-slate-900">{sj.subject}</td>
                                        <td className="px-6 py-4 text-center font-semibold text-slate-500">{sj.maxMarks}</td>
                                        <td className="px-6 py-4 text-center">
-                                         <input type="number" min="0" value={cardObtained[sj.id] || ''} onChange={(e) => setCardObtained({ ...cardObtained, [sj.id]: e.target.value.replace(/^0+(?=\d)/, '') })} placeholder="0" className="w-24 px-3 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-center font-extrabold text-indigo-900 focus:outline-none focus:border-indigo-500 inline-block" />
+                                         <input type="number" min="0" value={cardObtained[sj.id] || ''} onChange={(e) => setCardObtained({ ...cardObtained, [sj.id]: e.target.value.replace(/^0+(?=\d)/, '') })} placeholder="0" className="w-24 px-3 py-1.5 bg-teal-50 border border-teal-100 rounded-lg text-sm text-center font-extrabold text-teal-900 focus:outline-none focus:border-teal-500 inline-block" />
                                        </td>
                                      </tr>
                                    ))}
@@ -3546,20 +3772,20 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                      <p className="font-bold text-slate-900 text-sm">{sj.subject}</p>
                                      <p className="text-xs text-slate-400">/ {sj.maxMarks}</p>
                                    </div>
-                                   <input type="number" min="0" value={cardObtained[sj.id] || ''} onChange={(e) => setCardObtained({ ...cardObtained, [sj.id]: e.target.value.replace(/^0+(?=\d)/, '') })} placeholder="0" className="w-20 px-2 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-center font-extrabold text-indigo-900" />
+                                   <input type="number" min="0" value={cardObtained[sj.id] || ''} onChange={(e) => setCardObtained({ ...cardObtained, [sj.id]: e.target.value.replace(/^0+(?=\d)/, '') })} placeholder="0" className="w-20 px-2 py-1.5 bg-teal-50 border border-teal-100 rounded-lg text-sm text-center font-extrabold text-teal-900" />
                                  </div>
                                ))}
                              </div>
                              <div className="border-t border-gray-100 p-4 bg-gray-50/50 flex flex-col sm:flex-row items-center justify-between gap-3">
-                               <div className="text-xs font-bold text-slate-600 uppercase tracking-widest">Total: <span className="text-indigo-700 text-sm">{totO}/{totM}</span> ({pct}%) · <span className={pct >= 40 ? 'text-emerald-600' : 'text-rose-600'}>{pct >= 40 ? 'PASS' : 'RE-STUDY'}</span></div>
+                               <div className="text-xs font-bold text-slate-600 uppercase tracking-widest">Total: <span className="text-teal-700 text-sm">{totO}/{totM}</span> ({pct}%) · <span className={pct >= 40 ? 'text-amber-600' : 'text-rose-600'}>{pct >= 40 ? 'PASS' : 'RE-STUDY'}</span></div>
                                 <button onClick={handlePrintResultCard} className="py-2 px-5 bg-slate-900 text-white hover:bg-slate-800 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm flex items-center gap-2"><Printer size={14} /> Print</button>
-                                <button onClick={handleSaveStudentTest} className="py-2 px-5 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm flex items-center gap-2"><Save size={14} /> Save Test</button>
+                                <button onClick={handleSaveStudentTest} className="py-2 px-5 bg-teal-600 text-white hover:bg-teal-700 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm flex items-center gap-2"><Save size={14} /> Save Test</button>
                              </div>
                            </div>
 
                            {cardSubjects.length > 0 && (
                              <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-                               <div className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-5 py-4 flex items-center justify-between gap-3">
+                               <div className="bg-gradient-to-r from-teal-600 to-teal-600 text-white px-5 py-4 flex items-center justify-between gap-3">
                                  <div>
                                    <h3 className="text-base font-black uppercase tracking-wide">Result Card</h3>
                                    <p className="text-xs opacity-90">{examN}</p>
@@ -3584,7 +3810,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                        <tr key={sj.id}>
                                          <td className="px-5 py-3 font-bold text-slate-900">{sj.subject}</td>
                                          <td className="px-5 py-3 text-center font-bold text-slate-700">{rob}/{rmax}</td>
-                                         <td className="px-5 py-3 text-center"><span className={`px-2 py-0.5 rounded-full text-xs font-black ${rpct >= 40 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{rpct}%</span></td>
+                                         <td className="px-5 py-3 text-center"><span className={`px-2 py-0.5 rounded-full text-xs font-black ${rpct >= 40 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{rpct}%</span></td>
                                        </tr>
                                      );
                                    })}
@@ -3592,7 +3818,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                  <tfoot>
                                    <tr className="bg-slate-50 border-t border-slate-200">
                                      <td colSpan={2} className="px-5 py-3 font-black text-slate-900 uppercase text-xs">Total</td>
-                                     <td className="px-5 py-3 text-center font-black text-indigo-700">{pct}%</td>
+                                     <td className="px-5 py-3 text-center font-black text-teal-700">{pct}%</td>
                                    </tr>
                                  </tfoot>
                                </table>
@@ -3616,7 +3842,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                              });
                              const done = cardSubjects.every(sj => marks.some(m => String(m.studentId) === String(st.id) && m.examType === examN && m.subject === sj.subject));
                              return (
-                               <button key={st.id} onClick={() => { setCardObtained(init); setCardStudentId(st.id); }} className="text-left bg-indigo-50/50 hover:bg-indigo-100 border border-indigo-100 rounded-xl p-4 transition-all flex items-center gap-3 cursor-pointer">
+                               <button key={st.id} onClick={() => { setCardObtained(init); setCardStudentId(st.id); }} className="text-left bg-teal-50/50 hover:bg-teal-100 border border-teal-100 rounded-xl p-4 transition-all flex items-center gap-3 cursor-pointer">
                                  {st.photo ? (
                                    <img src={st.photo} alt={st.name} className="w-9 h-9 rounded-full object-cover border border-slate-200" />
                                  ) : (
@@ -3626,7 +3852,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                    <p className="font-bold text-slate-900 text-sm truncate">{st.name.split(' ').slice(0, 1).join(' ') || st.name}</p>
                                    <p className="text-xs text-slate-400">Roll #{st.rollNumber}</p>
                                  </div>
-                                 {done && <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">SAVED</span>}
+                                 {done && <span className="text-[10px] font-black text-amber-600 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full">SAVED</span>}
                                </button>
                              );
                            })}
@@ -3744,12 +3970,12 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                                   </span>
                                 );
                                 
-                                let col = '#10b981'; // default emerald
+                                let col = '#0d9488'; // default emerald
                                 try {
                                   const savedColors = safeStorage.getItem('acadamis_period_colors');
                                   if (savedColors) {
                                     const parsedColors = JSON.parse(savedColors);
-                                    col = parsedColors[`${entry.classId}_${p}`] || '#10b981';
+                                    col = parsedColors[`${entry.classId}_${p}`] || '#0d9488';
                                   }
                                 } catch (e) {}
                                 
@@ -3813,12 +4039,12 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {dayLectures.map(entry => {
-                        let col = '#10b981';
+                        let col = '#0d9488';
                         try {
                           const savedColors = safeStorage.getItem('acadamis_period_colors');
                           if (savedColors) {
                             const parsedColors = JSON.parse(savedColors);
-                            col = parsedColors[`${entry.classId}_${entry.period}`] || '#10b981';
+                            col = parsedColors[`${entry.classId}_${entry.period}`] || '#0d9488';
                           }
                         } catch (e) {}
 
@@ -3871,6 +4097,217 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
           </div>
         )}
 
+        {/* ========== MY ATTENDANCE (GPS CHECK-IN / OUT) ========== */}
+        {activeTab === 'my-attendance' && (
+          <div id="panel-teacher-my-attendance" className="space-y-6 animate-fade-in bg-teal-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-teal-100 shadow-inner">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase">My Attendance</h1>
+                <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest font-bold">GPS Verified Check-in / Check-out — Digital Staff Register</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {/* Today status + buttons */}
+              <div className="bg-gradient-to-br from-slate-900 via-teal-900 to-slate-900 rounded-2xl shadow-xl shadow-teal-100 p-6 relative overflow-hidden">
+                <div className="absolute -top-10 -right-10 w-40 h-40 bg-teal-500/20 rounded-full blur-3xl pointer-events-none"></div>
+                {(() => {
+                  const rec = myTodayAttendance;
+                  const badge = !rec ? 'bg-slate-500 text-white' : rec.status === 'present' ? 'bg-teal-600 text-white' : rec.status === 'late' ? 'bg-amber-500 text-white' : 'bg-rose-500 text-white';
+                  return (
+                    <div className="relative z-10">
+                      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-teal-300 mb-1">Today · {todayStr}</p>
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <h3 className="text-lg sm:text-xl font-black text-white tracking-tight uppercase">{new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
+                        <span className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${badge}`}>{rec ? rec.status.toUpperCase() : 'NOT CHECKED IN'}</span>
+                      </div>
+                      <div className="mt-4 grid grid-cols-3 gap-3">
+                        <div className="bg-white/10 border border-white/10 rounded-xl p-3">
+                          <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Check-In</p>
+                          <p className="text-sm font-black text-teal-300">{rec?.checkIn ? new Date(rec.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</p>
+                        </div>
+                        <div className="bg-white/10 border border-white/10 rounded-xl p-3">
+                          <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Check-Out</p>
+                          <p className="text-sm font-black text-teal-300">{rec?.checkOut ? new Date(rec.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</p>
+                        </div>
+                        <div className="bg-white/10 border border-white/10 rounded-xl p-3">
+                          <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">School Dist</p>
+                          <p className="text-sm font-black text-teal-300">{formatDistance(rec?.distanceMeters)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-3 items-center">
+                        <button
+                          onClick={handleTeacherCheckIn}
+                          disabled={Boolean(myTodayAttendance?.checkIn)}
+                          className="flex items-center gap-2 px-6 py-3.5 bg-teal-500 hover:bg-teal-600 disabled:bg-slate-600 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg transition-all active:scale-95 disabled:cursor-not-allowed"
+                        >
+                          <Fingerprint size={16} /> Check-In
+                        </button>
+                        <button
+                          onClick={handleTeacherCheckOut}
+                          disabled={!myTodayAttendance?.checkIn || Boolean(myTodayAttendance?.checkOut)}
+                          className="flex items-center gap-2 px-6 py-3.5 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-600 text-slate-950 rounded-xl text-xs font-black uppercase tracking-widest shadow-lg transition-all active:scale-95 disabled:cursor-not-allowed"
+                        >
+                          <LogOut size={16} /> Check-Out
+                        </button>
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <input type="checkbox" checked={useDemoPosition} onChange={(e) => setUseDemoPosition(e.target.checked)} className="w-4 h-4 accent-teal-600" />
+                          <span className="text-[9px] font-black uppercase tracking-wider text-teal-200">Demo GPS (School Location)</span>
+                        </label>
+                      </div>
+                      <p className="text-[10px] text-slate-300 font-bold mt-3 flex items-center gap-1.5">
+                        <MapPin size={12} className="text-teal-300" />
+                        School: {schoolLocation.name} · Radius {schoolLocation.radiusMeters} m — check-in sirf school ke andar se hota hai.
+                      </p>
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><CalendarClock size={14} className="text-teal-600" /> Monthly Overview</h3>
+                  <input type="month" value={selfAttMonth} onChange={(e) => setSelfAttMonth(e.target.value)} className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800" />
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5 text-center">
+                  {[['Present', selfAttSummary.presentDays, 'bg-teal-50 text-teal-700 border-teal-200'], ['Late', selfAttSummary.lateDays, 'bg-amber-50 text-amber-700 border-amber-200'], ['Absent', selfAttSummary.absentDays, 'bg-rose-50 text-rose-700 border-rose-200'], ['Leave', selfAttSummary.leaveDays, 'bg-slate-50 text-slate-600 border-slate-200'], ['Marked', selfAttSummary.totalMarked, 'bg-slate-50 text-slate-600 border-slate-200']].map((item) => (
+                    <div key={String(item[0])} className={`rounded-xl border p-2.5 ${item[2]}`}>
+                      <p className="text-[8px] font-black uppercase tracking-widest">{item[0]}</p>
+                      <p className="text-lg font-black mt-0.5">{item[1]}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Attendance Calendar — {monthLabel(selfAttYear, selfAttMonthIdx)}</p>
+                  <div className="grid grid-cols-7 gap-1 mt-2">
+                    {['M','T','W','T','F','S','S'].map((d, i) => <div key={i} className="text-center text-[9px] font-black text-slate-400">{d}</div>)}
+                    {selfAttGrid.map((d, i) => {
+                      if (d === null) return <div key={`e${i}`} />;
+                      const dateStr = `${selfAttYear}-${String(selfAttMonthIdx + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                      const st = statusOnDate(dateStr);
+                      const cellCls = st === 'present' ? 'bg-teal-600 text-white' : st === 'late' ? 'bg-amber-400 text-white' : st === 'absent' ? 'bg-rose-500 text-white' : st === 'leave' ? 'bg-slate-300 text-slate-700' : 'bg-slate-50 text-slate-500';
+                      return (
+                        <div key={d} title={dateStr + (st ? ` · ${st}` : '')} className={`aspect-square rounded-md flex items-center justify-center text-[10px] font-black ${cellCls}`}>
+                          {d}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+              <div className="px-5 py-3 bg-slate-50 flex items-center gap-2">
+                <Receipt size={14} className="text-teal-600" />
+                <h3 className="text-xs font-black text-slate-600 uppercase tracking-widest">My Attendance History</h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-gray-100 text-xs font-bold text-gray-500 uppercase tracking-widest bg-gray-50">
+                      <th className="px-5 py-3">Date</th>
+                      <th className="px-5 py-3">Status</th>
+                      <th className="px-5 py-3">Check-In</th>
+                      <th className="px-5 py-3">Check-Out</th>
+                      <th className="px-5 py-3">School Dist</th>
+                      <th className="px-5 py-3">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-150 text-sm">
+                    {myTeacherAttendance.length === 0 ? (
+                      <tr><td colSpan={6} className="px-5 py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">Koi attendance record nahi — aaj check-in karein</td></tr>
+                    ) : myTeacherAttendance.slice().sort((a, b) => (b.date + (b.checkIn || '')).localeCompare(a.date + (a.checkIn || ''))).map(rec => (
+                      <tr key={rec.id} className="hover:bg-gray-50/20">
+                        <td className="px-5 py-3 font-bold text-slate-800">{rec.date}</td>
+                        <td className="px-5 py-3">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider border ${rec.status === 'present' ? 'bg-teal-600 text-white' : rec.status === 'late' ? 'bg-amber-500 text-white' : rec.status === 'leave' ? 'bg-slate-400 text-white' : 'bg-rose-600 text-white'}`}>{rec.status}</span>
+                        </td>
+                        <td className="px-5 py-3 text-slate-500">{rec.checkIn ? new Date(rec.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                        <td className="px-5 py-3 text-slate-500">{rec.checkOut ? new Date(rec.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                        <td className="px-5 py-3 text-slate-500">{formatDistance(rec.distanceMeters)}</td>
+                        <td className="px-5 py-3 text-slate-500">{rec.note || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* ========== MY PAY ========== */}
+        {activeTab === 'my-pay' && (
+          <div id="panel-teacher-my-pay" className="space-y-6 animate-fade-in bg-amber-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-amber-100 shadow-inner">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase">My Pay & Salary Slip</h1>
+                <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest font-bold">Monthly hisab-e-tankhwah — attendance k sath linked (Digital Registrar)</p>
+              </div>
+              <select
+                value={payMonthSel}
+                onChange={(e) => setPayMonthSel(e.target.value)}
+                className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest text-slate-800"
+              >
+                {(() => {
+                  const opts: string[] = [];
+                  const now = new Date();
+                  for (let i = 0; i < 6; i++) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    opts.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+                  }
+                  return opts.map(o => <option key={o} value={o}>{monthLabel(Number(o.split('-')[0]), Number(o.split('-')[1]) - 1)}</option>);
+                })()}
+              </select>
+            </div>
+
+            <div className="bg-gradient-to-br from-slate-900 via-teal-900 to-slate-900 rounded-2xl shadow-xl shadow-teal-100 p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5 overflow-hidden relative">
+              <div className="absolute -top-16 -right-16 w-64 h-64 bg-amber-400/20 rounded-full blur-3xl pointer-events-none"></div>
+              <div className="relative z-10">
+                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-teal-300 mb-1">Payslip · {monthLabel(myPayslip.year, myPayslip.month)}</p>
+                <h3 className="text-2xl font-black text-white tracking-tight uppercase">{teacherProfile?.name || userSession.name}</h3>
+                <p className="text-xs text-teal-200 font-bold uppercase tracking-widest mt-1">{teacherProfile?.subject || teacherSubject}</p>
+              </div>
+              <div className="relative z-10 text-right">
+                <p className="text-[10px] font-black uppercase tracking-widest text-amber-300">Net Payable</p>
+                <p className="text-3xl font-black text-amber-400 tracking-tight">{formatPKR(myPayslip.netPay)}</p>
+                <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${myPayslip.paid ? 'bg-teal-500 text-white' : 'bg-amber-500 text-slate-950'}`}>
+                  {myPayslip.paid ? `PAID ${myPayslip.paidDate ? '· ' + myPayslip.paidDate : ''}` : 'PENDING'}
+                </span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                <div className="px-5 py-3 bg-slate-50 flex items-center gap-2"><Wallet size={14} className="text-teal-600" /><h3 className="text-xs font-black text-slate-600 uppercase tracking-widest">Earnings</h3></div>
+                <div className="space-y-2.5 px-5 py-4">
+                  <div className="flex justify-between"><span className="text-xs font-bold text-slate-500">Base Salary</span><span className="text-xs font-black text-slate-900">{formatPKR(myPayslip.baseSalary)}</span></div>
+                  <div className="flex justify-between"><span className="text-xs font-bold text-slate-500">Present Bonus ({myPayslip.presentDays} days × {formatPKR(myPayConfig.bonusPerPresentDay)})</span><span className="text-xs font-black text-teal-600">+ {formatPKR(myPayslip.presentBonus)}</span></div>
+                  <div className="flex justify-between"><span className="text-xs font-bold text-slate-500">Allowances</span><span className="text-xs font-black text-teal-600">+ {formatPKR(myPayslip.allowances)}</span></div>
+                </div>
+                <div className="px-5 py-3 bg-teal-50 text-teal-800 border border-teal-100">
+                  <div className="flex justify-between text-xs font-black"><span>Total Earnings</span><span>{formatPKR(myPayslip.baseSalary + myPayslip.presentBonus + myPayslip.allowances)}</span></div>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+                <div className="px-5 py-3 bg-slate-50 flex items-center gap-2"><Coins size={14} className="text-amber-600" /><h3 className="text-xs font-black text-slate-600 uppercase tracking-widest">Deductions</h3></div>
+                <div className="space-y-2.5 px-5 py-4">
+                  <div className="flex justify-between"><span className="text-xs font-bold text-slate-500">Late ({myPayslip.lateDays} day × {formatPKR(myPayConfig.lateDeductionPerDay)})</span><span className="text-xs font-black text-rose-600">- {formatPKR(myPayslip.lateDeduction)}</span></div>
+                  <div className="flex justify-between"><span className="text-xs font-bold text-slate-500">Absent ({myPayslip.absentDays} day × {formatPKR(myPayConfig.absentDeductionPerDay)})</span><span className="text-xs font-black text-rose-600">- {formatPKR(myPayslip.absentDeduction)}</span></div>
+                  <div className="flex justify-between"><span className="text-xs font-bold text-slate-500">Fixed Deductions</span><span className="text-xs font-black text-rose-600">- {formatPKR(myPayslip.fixedDeductions)}</span></div>
+                </div>
+                <div className="px-5 py-3 bg-amber-50 text-amber-800 border border-amber-200">
+                  <div className="flex justify-between text-xs font-black"><span>Net Payable</span><span>{formatPKR(myPayslip.netPay)}</span></div>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={printPayslip}
+              className="w-full sm:w-auto px-6 py-3.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg shadow-teal-200 transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Printer size={16} /> Print / Save Payslip (PDF)
+            </button>
+          </div>
+        )}
         {/* ========== SETTINGS TAB (CHANGE ID/PASSWORD) ========== */}
         {/* ========== FEES & FINANCIAL HUB PANEL ========== */}
         {activeTab === 'fees' && (
@@ -3882,7 +4319,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
               </div>
               <button
                 onClick={() => setShowAddFeeModal(true)}
-                className="px-6 py-3 bg-slate-900 text-white text-xs font-black uppercase tracking-[0.3em] flex items-center gap-2 hover:bg-emerald-600 transition-all shadow-xl shadow-slate-200"
+                className="px-6 py-3 bg-slate-900 text-white text-xs font-black uppercase tracking-[0.3em] flex items-center gap-2 hover:bg-amber-600 transition-all shadow-xl shadow-slate-200"
               >
                 <Plus size={14} /> Record Cash Collection
               </button>
@@ -3895,9 +4332,9 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
                   {students.length * 5500}
                 </h3>
               </div>
-              <div className="bg-white p-6 border border-emerald-100 shadow-sm rounded-xl">
-                <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-1 ">Cash Collected</p>
-                <h3 className="text-2xl font-black text-emerald-700 tracking-tighter">
+              <div className="bg-white p-6 border border-amber-100 shadow-sm rounded-xl">
+                <p className="text-xs font-bold text-amber-600 uppercase tracking-widest mb-1 ">Cash Collected</p>
+                <h3 className="text-2xl font-black text-amber-700 tracking-tighter">
                   {fees.reduce((acc, curr) => acc + curr.amount, 0)}
                 </h3>
               </div>
@@ -3912,7 +4349,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
             <div className="bg-white border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
                 <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 flex items-center gap-2">
-                  <CreditCard size={14} className="text-emerald-600" /> Recent Collection Ledger
+                  <CreditCard size={14} className="text-amber-600" /> Recent Collection Ledger
                 </h3>
               </div>
               <div className="overflow-x-auto">
@@ -3940,9 +4377,9 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                               <span className="text-xs text-slate-400 font-bold uppercase tracking-widest leading-none">{sRoll}</span>
                             </td>
                             <td className="px-6 py-4 text-slate-500 font-bold tracking-widest text-xs">{fee.paidDate || fee.month}</td>
-                            <td className="px-6 py-4 text-emerald-600 font-black tracking-tighter text-sm">{fee.amount}</td>
+                            <td className="px-6 py-4 text-amber-600 font-black tracking-tighter text-sm">{fee.amount}</td>
                             <td className="px-6 py-4 uppercase">
-                              <span className="bg-emerald-50 text-emerald-600 px-2 py-1 text-xs font-black tracking-widest border border-emerald-100">Verified</span>
+                              <span className="bg-amber-50 text-amber-600 px-2 py-1 text-xs font-black tracking-widest border border-amber-100">Verified</span>
                             </td>
                           </tr>
                         );
@@ -3961,10 +4398,10 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
 
         {activeTab === 'settings' && (
           <div id="panel-teacher-settings" className="space-y-8 animate-fade-in bg-slate-50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 shadow-inner">
-            <div className="bg-white rounded-xl p-8 border border-slate-200 shadow-sm border-t-4 border-t-indigo-600">
+            <div className="bg-white rounded-xl p-8 border border-slate-200 shadow-sm border-t-4 border-t-teal-600">
               <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-indigo-50 rounded-xl border border-indigo-100">
-                  <Sparkles size={24} className="text-indigo-600" />
+                <div className="p-2 bg-teal-50 rounded-xl border border-teal-100">
+                  <Sparkles size={24} className="text-teal-600" />
                 </div>
                 <div>
                   <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">Security & Profile Settings</h2>
@@ -4006,7 +4443,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                       name="username"
                       type="text" 
                       defaultValue={teacherProfile?.username || ''}
-                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
+                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-teal-500 outline-none font-mono text-sm"
                       placeholder="Enter new login ID"
                       required
                     />
@@ -4018,7 +4455,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                       name="password"
                       type="password" 
                       defaultValue={teacherProfile?.password || ''}
-                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
+                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-teal-500 outline-none font-mono text-sm"
                       placeholder="Enter new password"
                       required
                     />
@@ -4029,7 +4466,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                     <input 
                       name="confirm_password"
                       type="password" 
-                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none font-mono text-sm"
+                      className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl focus:ring-1 focus:ring-teal-500 outline-none font-mono text-sm"
                       placeholder="Confirm new password"
                       required
                     />
@@ -4038,7 +4475,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
 
                 <button 
                   type="submit"
-                  className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-black uppercase tracking-widest text-xs transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+                  className="w-full py-4 bg-teal-600 hover:bg-teal-700 text-white font-black uppercase tracking-widest text-xs transition-all shadow-lg shadow-teal-100 flex items-center justify-center gap-2"
                 >
                   <Save size={16} />
                   Update Credentials
@@ -4067,7 +4504,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
               onClick={() => { handleTabChange('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               className={`flex flex-col items-center justify-center transition-all duration-300 ${
                 activeTab === 'dashboard' 
-                  ? 'rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-indigo-600 text-white' 
+                  ? 'rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-teal-600 text-white' 
                   : 'text-slate-400 hover:text-white p-2'
               }`}
               style={activeTab === 'dashboard' ? { minHeight: '52px', minWidth: '52px' } : {}}
@@ -4087,7 +4524,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
               }}
               className={`flex flex-col items-center justify-center transition-all duration-300 ${
                 activeTab === 'marks' 
-                  ? 'rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-violet-600 text-white' 
+                  ? 'rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-teal-600 text-white' 
                   : 'text-slate-400 hover:text-white p-2'
               }`}
               style={activeTab === 'marks' ? { minHeight: '52px', minWidth: '52px' } : {}}
@@ -4107,7 +4544,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
               }}
               className={`flex flex-col items-center justify-center transition-all duration-300 ${
                 activeTab === 'attendance'
-                  ? 'rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-emerald-600 text-white'
+                  ? 'rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-amber-600 text-white'
                   : 'text-slate-400 hover:text-white p-2'
               }`}
               style={activeTab === 'attendance' ? { minHeight: '52px', minWidth: '52px' } : {}}
@@ -4137,7 +4574,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
             <button
               id="mobile-nav-menu"
               onClick={() => setSidebarOpen(true)}
-              className="flex flex-col items-center justify-center py-1 transition-all text-center text-slate-400 hover:text-emerald-400 focus:outline-none"
+              className="flex flex-col items-center justify-center py-1 transition-all text-center text-slate-400 hover:text-amber-400 focus:outline-none"
             >
               <Menu size={18} />
               <span className="text-[10px] mt-0.5 font-bold uppercase tracking-wider">Menu</span>
@@ -4162,7 +4599,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
               {/* Modal Header */}
               <div className="p-6 bg-slate-900 text-white flex items-center justify-between">
                 <div className="flex items-center gap-4">
-                  <div className="w-20 h-20 bg-slate-800 rounded-2xl flex items-center justify-center border-2 border-indigo-300/30 overflow-hidden shrink-0 shadow-lg">
+                  <div className="w-20 h-20 bg-slate-800 rounded-2xl flex items-center justify-center border-2 border-teal-300/30 overflow-hidden shrink-0 shadow-lg">
                     {getStudentPhoto(selectedStudentProfile) ? (
                       <img src={getStudentPhoto(selectedStudentProfile)} alt={selectedStudentProfile.name} className="w-full h-full object-cover" />
                     ) : (
@@ -4171,7 +4608,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                   </div>
                   <div>
                     <h2 className="text-xl sm:text-2xl font-black uppercase tracking-tight">{selectedStudentProfile.name}</h2>
-                    <p className="text-xs text-indigo-300 font-bold tracking-widest uppercase mt-1">
+                    <p className="text-xs text-teal-300 font-bold tracking-widest uppercase mt-1">
                       Roll #{selectedStudentProfile.rollNumber}
                     </p>
                   </div>
@@ -4229,52 +4666,52 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                   {/* Mark Input Form */}
                   <div className="space-y-6">
                     <div className="flex items-center gap-2">
-                       <Award className="text-indigo-600" size={20} />
+                       <Award className="text-teal-600" size={20} />
                        <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider ">Direct Mark Management</h3>
                     </div>
                     
-                    <div className="bg-indigo-50/50 p-6 border border-indigo-100 space-y-4 shadow-sm">
+                    <div className="bg-teal-50/50 p-6 border border-teal-100 space-y-4 shadow-sm">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5 font-sans">
-                          <label className="text-xs font-black text-indigo-900 uppercase">Subject</label>
+                          <label className="text-xs font-black text-teal-900 uppercase">Subject</label>
                           <input 
                             type="text"
                             value={profileMarkSubject}
                             onChange={(e) => setProfileMarkSubject(e.target.value)}
-                            className="w-full px-3 py-2 bg-white border border-indigo-200 text-xs font-bold focus:border-indigo-600 focus:outline-none"
+                            className="w-full px-3 py-2 bg-white border border-teal-200 text-xs font-bold focus:border-teal-600 focus:outline-none"
                           />
                         </div>
                         <div className="space-y-1.5 font-sans">
-                          <label className="text-xs font-black text-indigo-900 uppercase">Max Marks</label>
+                          <label className="text-xs font-black text-teal-900 uppercase">Max Marks</label>
                           <input 
                             type="number"
                             value={profileMarkMax}
                             onChange={(e) => setProfileMarkMax(e.target.value)}
-                            className="w-full px-3 py-2 bg-white border border-indigo-200 text-xs font-bold focus:border-indigo-600 focus:outline-none"
+                            className="w-full px-3 py-2 bg-white border border-teal-200 text-xs font-bold focus:border-teal-600 focus:outline-none"
                           />
                         </div>
                       </div>
 
                       <div className="space-y-1.5 font-sans">
-                         <label className="text-xs font-black text-indigo-900 uppercase">Test / Assignment Title</label>
+                         <label className="text-xs font-black text-teal-900 uppercase">Test / Assignment Title</label>
                          <input 
                            type="text"
                            value={profileMarkExam}
                            onChange={(e) => setProfileMarkExam(e.target.value)}
                            placeholder="e.g. Monthly Test, Assignment 1"
-                           className="w-full px-3 py-2 bg-white border border-indigo-200 text-xs font-bold focus:border-indigo-600 focus:outline-none"
+                           className="w-full px-3 py-2 bg-white border border-teal-200 text-xs font-bold focus:border-teal-600 focus:outline-none"
                          />
                       </div>
 
                       <div className="space-y-1.5 font-sans">
-                         <label className="text-xs font-black text-indigo-900 uppercase">Marks Obtained</label>
+                         <label className="text-xs font-black text-teal-900 uppercase">Marks Obtained</label>
                          <div className="flex items-center gap-3">
                            <input 
                              type="number"
                               value={profileMarkObtained}
                               onChange={(e) => setProfileMarkObtained(e.target.value.replace(/^0+(?=\d)/, ''))}
                              placeholder="Score"
-                             className="w-full px-4 py-3 bg-white border border-indigo-200 text-lg font-black text-indigo-900 focus:border-indigo-600 focus:outline-none"
+                             className="w-full px-4 py-3 bg-white border border-teal-200 text-lg font-black text-teal-900 focus:border-teal-600 focus:outline-none"
                            />
                            <span className="text-slate-400 font-black text-xl ">/ {profileMarkMax}</span>
                          </div>
@@ -4282,7 +4719,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
 
                       <button 
                         onClick={handleAddMarkFromProfile}
-                        className="w-full py-4 bg-indigo-600 hover:bg-slate-900 text-white text-xs font-black uppercase tracking-[0.2em] shadow-lg shadow-indigo-200 transition-all active:scale-95"
+                        className="w-full py-4 bg-teal-600 hover:bg-slate-900 text-white text-xs font-black uppercase tracking-[0.2em] shadow-lg shadow-teal-200 transition-all active:scale-95"
                       >
                         Commit Mark to Record
                       </button>
@@ -4293,7 +4730,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                   <div className="space-y-6">
                     <div className="flex items-center justify-between">
                        <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Academic History</h3>
-                       <span className="text-xs font-bold text-indigo-600 uppercase">Latest Entries</span>
+                       <span className="text-xs font-bold text-teal-600 uppercase">Latest Entries</span>
                     </div>
 
                     <div className="space-y-3 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar">
@@ -4302,13 +4739,13 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                           .filter(m => m.studentId === selectedStudentProfile.id)
                           .sort((a, b) => b.id.localeCompare(a.id))
                           .map(m => (
-                            <div key={m.id} className="p-4 bg-white border border-slate-100 flex items-center justify-between hover:border-indigo-200 transition-all shadow-xs rounded-xl">
+                            <div key={m.id} className="p-4 bg-white border border-slate-100 flex items-center justify-between hover:border-teal-200 transition-all shadow-xs rounded-xl">
                               <div className="text-left">
                                 <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">{m.examType}</h4>
                                 <p className="text-xs text-slate-400 font-bold uppercase mt-0.5">{m.subject}</p>
                               </div>
                               <div className="text-right">
-                                <span className={`text-base font-black  ${ (m.marksObtained / Math.max(1, m.maxMarks)) >= 0.33 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                <span className={`text-base font-black  ${ (m.marksObtained / Math.max(1, m.maxMarks)) >= 0.33 ? 'text-amber-600' : 'text-rose-600'}`}>
                                   {m.marksObtained}
                                 </span>
                                 <span className="text-xs text-slate-300 font-bold"> / {m.maxMarks}</span>
@@ -4349,7 +4786,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
           >
             <div className="p-6 border-b border-slate-100 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <Bell size={20} className="text-indigo-600" />
+                <Bell size={20} className="text-teal-600" />
                 <h3 className="text-sm font-black uppercase tracking-tight text-slate-900">Receipt Dispatch</h3>
               </div>
               <button 
@@ -4382,7 +4819,7 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
                     setFeeNotificationPopup(prev => prev ? { ...prev, messageText: revisedText } : null);
                   }}
                   rows={6}
-                  className="w-full bg-slate-50 text-xs p-4 rounded-xl text-slate-800 border border-slate-100 focus:outline-none focus:border-indigo-600 leading-relaxed resize-none font-medium"
+                  className="w-full bg-slate-50 text-xs p-4 rounded-xl text-slate-800 border border-slate-100 focus:outline-none focus:border-teal-600 leading-relaxed resize-none font-medium"
                 />
               </div>
 

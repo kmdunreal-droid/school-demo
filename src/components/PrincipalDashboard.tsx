@@ -1,14 +1,14 @@
-import { testSupabaseConnection } from '../supabase';
+import { testSupabaseConnection, isDemoMode } from '../supabase';
 import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
 import { listChanged } from '../lib/dataUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote } from 'lucide-react';
+import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote, Wallet, MapPin, Navigation, Coins, CalendarClock, LocateFixed } from 'lucide-react';
 import { getPeriodStatus, getStatusColor } from '../lib/periodUtils';
 import { addNotification, getNotifications, saveNotifications, PortalNotification } from '../lib/notificationUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell } from 'recharts';
-import { Teacher, Student, Coordinator, Class, TimetableEntry, DayOfWeek, UserSession, FeeRecord, Attendance, Mark, AppSettings, StudentFeeData, DueEntry, Assignment, getStudentPhoto } from '../types';
+import { Teacher, Student, Coordinator, Class, TimetableEntry, DayOfWeek, UserSession, FeeRecord, Attendance, Mark, AppSettings, StudentFeeData, DueEntry, Assignment, TeacherAttendance, TeacherPayConfig, TeacherPayslip, SchoolLocation, getStudentPhoto } from '../types';
 import { HoldActionWrapper } from './HoldActionWrapper';
 import { FeePaymentCenter } from './FeePaymentCenter';
 import { useLongPress } from '../lib/longPress';
@@ -38,6 +38,9 @@ import {
   MONTHS,
   Month
 } from '../lib/feeEngine';
+import { defaultPayConfig, summarizeTeacherMonth, buildPayslip, monthLabel, formatPKR } from '../lib/payEngine';
+import { DEFAULT_SCHOOL_LOCATION, haversineMeters, formatDistance } from '../lib/geoUtils';
+import { INITIAL_TEACHER_PAY_CONFIGS, INITIAL_SCHOOL_LOCATION } from '../initialData';
 
 // ===== Month parsing helpers =====
 // Fee month strings mixed formats mein aati hain: 'Jun', 'Jun 2026', 'June 2026', 'September'.
@@ -129,8 +132,8 @@ interface PrincipalDashboardProps {
   pushLocalToCloud: () => Promise<void>;
 }
 
-type PrincipalTabType = 'dashboard' | 'management_hub' | 'timetable' | 'alerts' | 'settings' | 'registers' | 'monthly_report' | 'fees';
-type CoordinatorTabType = 'dashboard' | 'management_hub' | 'timetable' | 'alerts' | 'settings' | 'registers' | 'monthly_report' | 'fees';
+type PrincipalTabType = 'dashboard' | 'management_hub' | 'timetable' | 'alerts' | 'settings' | 'registers' | 'monthly_report' | 'fees' | 'teacher_pay';
+type CoordinatorTabType = PrincipalTabType;
 type TabType = PrincipalTabType | CoordinatorTabType;
 
 const STANDARD_SUBJECTS_LIST = [
@@ -140,6 +143,19 @@ const STANDARD_SUBJECTS_LIST = [
 ];
 
 import { safeStorage } from '../lib/safeStorage';
+
+/** localStorage se typed load — demo mode ka primary store. */
+function loadLocalJSON<T>(key: string, fallback: T): T {
+  try {
+    const raw = safeStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(fallback) && (!Array.isArray(parsed) || parsed.length === 0)) return fallback;
+    return (parsed ?? fallback) as T;
+  } catch {
+    return fallback;
+  }
+}
 
 export default function PrincipalDashboard({
   userSession,
@@ -172,7 +188,7 @@ export default function PrincipalDashboard({
 }: PrincipalDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     const saved = safeStorage.getItem('acadamis_active_tab');
-    const valid: TabType[] = ['dashboard', 'management_hub', 'timetable', 'alerts', 'settings', 'registers', 'monthly_report', 'fees'];
+    const valid: TabType[] = ['dashboard', 'management_hub', 'timetable', 'alerts', 'settings', 'registers', 'monthly_report', 'fees', 'teacher_pay'];
     return (saved && valid.includes(saved as TabType) ? saved : 'dashboard') as TabType;
   });
 
@@ -222,7 +238,97 @@ export default function PrincipalDashboard({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const touchStartX = useRef<number | null>(null);
 
-  // Notification feed for Principal / Coordinator
+  // ===== TEACHER PAY + GPS ATTENDANCE MANAGEMENT (demo local store) =====
+  const [allTeacherAttendance, setAllTeacherAttendance] = useState<TeacherAttendance[]>(() => loadLocalJSON('acadamis_teacher_attendance', [] as TeacherAttendance[]));
+  const [teacherPayConfigs, setTeacherPayConfigsP] = useState<TeacherPayConfig[]>(() => loadLocalJSON('acadamis_teacher_pay_configs', INITIAL_TEACHER_PAY_CONFIGS as TeacherPayConfig[]));
+  const [teacherPaySlips, setTeacherPaySlipsP] = useState<Record<string, TeacherPayslip>>(() => loadLocalJSON('acadamis_teacher_pay_slips', {} as Record<string, TeacherPayslip>));
+  const [schoolLocation, setSchoolLocationP] = useState<SchoolLocation>(() => loadLocalJSON('acadamis_school_location', INITIAL_SCHOOL_LOCATION as SchoolLocation));
+  const [payMonthSelP, setPayMonthSelP] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [editingPayTeacherId, setEditingPayTeacherId] = useState<string | null>(null);
+  const [payForm, setPayForm] = useState<TeacherPayConfig | null>(null);
+  const [locLat, setLocLat] = useState<string>(() => loadLocalJSON('acadamis_school_location', INITIAL_SCHOOL_LOCATION as SchoolLocation).lat.toString());
+  const [locLng, setLocLng] = useState<string>(() => loadLocalJSON('acadamis_school_location', INITIAL_SCHOOL_LOCATION as SchoolLocation).lng.toString());
+  const [locRadius, setLocRadius] = useState<string>(() => loadLocalJSON('acadamis_school_location', INITIAL_SCHOOL_LOCATION as SchoolLocation).radiusMeters.toString());
+  const [locName, setLocName] = useState<string>(() => loadLocalJSON('acadamis_school_location', INITIAL_SCHOOL_LOCATION as SchoolLocation).name);
+  const [showLocSaved, setShowLocSaved] = useState(false);
+
+  useEffect(() => {
+    safeStorage.setItem('acadamis_teacher_pay_configs', JSON.stringify(teacherPayConfigs));
+    teacherPayConfigs.forEach(c => sbQueueWrite('teacher_pay', `cfg_${c.teacherId}`, c));
+  }, [teacherPayConfigs]);
+  useEffect(() => {
+    safeStorage.setItem('acadamis_teacher_pay_slips', JSON.stringify(teacherPaySlips));
+    Object.entries(teacherPaySlips).forEach(([k, v]) => sbQueueWrite('teacher_pay', k, v));
+  }, [teacherPaySlips]);
+  useEffect(() => {
+    safeStorage.setItem('acadamis_school_location', JSON.stringify(schoolLocation));
+    sbQueueWrite('school_location', 'global', schoolLocation);
+  }, [schoolLocation]);
+
+  const [payYearP, payMonthIdxP] = React.useMemo(() => {
+    const parts = payMonthSelP.split('-').map(Number) as [number, number];
+    return [parts[0], parts[1] - 1] as [number, number];
+  }, [payMonthSelP]);
+
+  const teacherPayslipsMap = React.useMemo(() => {
+    const map: Record<string, TeacherPayslip> = {};
+    teachers.forEach((t) => {
+      const cfg = teacherPayConfigs.find(c => String(c.teacherId) === String(t.id)) || defaultPayConfig(t.id);
+      map[t.id] = buildPayslip(t, cfg, allTeacherAttendance, payYearP, payMonthIdxP, teacherPaySlips);
+    });
+    return map;
+  }, [teachers, teacherPayConfigs, allTeacherAttendance, payYearP, payMonthIdxP, teacherPaySlips]);
+
+  const savePayConfig = (updated: TeacherPayConfig) => {
+    const existing = teacherPayConfigs.slice();
+    const idx = existing.findIndex(c => String(c.teacherId) === String(updated.teacherId));
+    if (idx >= 0) existing[idx] = updated; else existing.push(updated);
+    setTeacherPayConfigsP(existing);
+    setEditingPayTeacherId(null);
+    setPayForm(null);
+    toast.success('Teacher pay config saved!');
+  };
+
+  const markTeacherPaid = (teacherId: string) => {
+    const key = `${teacherId}_${payYearP}_${payMonthIdxP}`;
+    const prev = { ...teacherPaySlips };
+    const existing = prev[key] || teacherPayslipsMap[teacherId];
+    prev[key] = {
+      ...existing,
+      teacherId,
+      year: payYearP,
+      month: payMonthIdxP,
+      paid: true,
+      paidDate: new Date().toLocaleDateString(),
+    };
+    setTeacherPaySlipsP(prev);
+    toast.success(`Teacher salary marked PAID for ${monthLabel(payYearP, payMonthIdxP)}`);
+  };
+
+  const saveSchoolLocation = () => {
+    const lat = Number(locLat);
+    const lng = Number(locLng);
+    const radius = Number(locRadius);
+    if (isNaN(lat) || isNaN(lng) || isNaN(radius) || radius <= 0) {
+      toast.error('Valid lat / lng / radius enter karein.');
+      return;
+    }
+    setSchoolLocationP({ lat, lng, radiusMeters: Math.max(1, Math.round(radius)), name: locName.trim() || 'NSB1 Academy' });
+    setShowLocSaved(true);
+    setTimeout(() => setShowLocSaved(false), 2500);
+    toast.success('School location updated — teachers ka GPS radius ab naye coordinates se check hoga.');
+  };
+
+  const openPayEditor = (t: Teacher) => {
+    const found = teacherPayConfigs.find(c => String(c.teacherId) === String(t.id)) || defaultPayConfig(t.id);
+    setPayForm({ ...found });
+    setEditingPayTeacherId(t.id);
+  };
+
+  // ===== Notification feed for Principal / Coordinator =====
   const [portalNotifications, setPortalNotifications] = useState<PortalNotification[]>(() => getNotifications());
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
 
@@ -1360,7 +1466,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 window.open(waUrl, '_blank');
                 toast.dismiss(t);
               }}
-              className="bg-emerald-600 text-white px-3 py-1 rounded-md text-xs font-black uppercase cursor-pointer"
+              className="bg-amber-600 text-white px-3 py-1 rounded-md text-xs font-black uppercase cursor-pointer"
             >
               Send
             </button>
@@ -1429,7 +1535,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 window.open(waUrl, '_blank');
                 toast.dismiss(t);
               }}
-              className="bg-indigo-600 text-white px-3 py-1 rounded-md text-xs font-black uppercase cursor-pointer"
+              className="bg-teal-600 text-white px-3 py-1 rounded-md text-xs font-black uppercase cursor-pointer"
             >
               Send
             </button>
@@ -1657,7 +1763,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 window.open(waUrl, '_blank');
                 toast.dismiss(t);
               }}
-              className="bg-emerald-600 text-white px-3 py-1.5 rounded-md text-xs font-black uppercase cursor-pointer shrink-0"
+              className="bg-amber-600 text-white px-3 py-1.5 rounded-md text-xs font-black uppercase cursor-pointer shrink-0"
             >
               Send
             </button>
@@ -1957,7 +2063,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
   const getPeriodColor = (period: string) => {
     const key = `${selectedTimetableClass}_${period}`;
-    return appSettings.periodColors[key] || '#4f46e5'; // default Indigo color
+    return appSettings.periodColors[key] || '#0d9488'; // default Indigo color
   };
 
   const convertToWebP = (file: File): Promise<string> => {
@@ -2663,13 +2769,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
   const getAttendanceStatusClass = (status?: string) => {
     return status === 'present'
-      ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+      ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
       : status === 'absent'
       ? 'bg-rose-600 text-white border-rose-700 shadow-xs'
       : status === 'late'
       ? 'bg-amber-500 text-white border-amber-600 shadow-xs'
       : status === 'leave'
-      ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+      ? 'bg-slate-600 text-white border-slate-700 shadow-xs'
       : 'bg-slate-200 text-slate-600 border-slate-300 shadow-xs';
   };
 
@@ -2713,7 +2819,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           <img src="/logo.png" alt="NSB1 Logo" className="h-9 w-auto object-contain shrink-0" referrerPolicy="no-referrer" />
           <div className="min-w-0 flex flex-col leading-none">
             <h1 className="font-black text-gray-900 tracking-tight uppercase text-sm truncate">NSB1 School</h1>
-            <span className="text-[9px] font-black text-indigo-600 uppercase tracking-[0.2em]">Principal Office</span>
+            <span className="text-[9px] font-black text-teal-600 uppercase tracking-[0.2em]">Principal Office</span>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -2746,7 +2852,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <span className="text-xs font-extrabold text-slate-400 uppercase tracking-widest">Office Alerts</span>
                       <div className="flex items-center gap-2">
                         {relevantNotifications.length > 0 && (
-                          <button onClick={handleMarkAllRead} className="text-xs hover:underline text-emerald-600 font-bold uppercase">Mark Read</button>
+                          <button onClick={handleMarkAllRead} className="text-xs hover:underline text-amber-600 font-bold uppercase">Mark Read</button>
                         )}
                         {relevantNotifications.length > 0 && (
                           <span className="text-slate-200">|</span>
@@ -2764,7 +2870,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         relevantNotifications.map(notif => (
                           <div 
                             key={notif.id} 
-                            className={`p-3 text-left transition-colors hover:bg-slate-50/50 ${notif.isUnread ? 'bg-emerald-50/40' : ''}`}
+                            className={`p-3 text-left transition-colors hover:bg-slate-50/50 ${notif.isUnread ? 'bg-amber-50/40' : ''}`}
                           >
                             <div className="flex items-start gap-2.5">
                               <span className="text-xs">
@@ -2773,7 +2879,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               <div className="space-y-0.5 min-w-0 flex-1">
                                 <h4 className="font-extrabold text-xs text-slate-900 leading-tight flex items-center gap-1.5">
                                   <span className="truncate">{notif.title}</span>
-                                  {notif.isUnread && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>}
+                                  {notif.isUnread && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>}
                                 </h4>
                                 <p className="text-xs text-slate-600 leading-relaxed break-words whitespace-normal">{notif.message}</p>
                                 <span className="text-[10px] text-slate-400 block font-mono mt-1">{notif.timestamp}</span>
@@ -2829,7 +2935,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           </div>
           <div className="flex flex-col items-center gap-1 mt-2">
             <h1 className="text-slate-900 font-black text-sm tracking-[0.2em] uppercase">NSB1 School</h1>
-            <span className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.3em]">Principal Office</span>
+            <span className="text-[10px] font-black text-teal-600 uppercase tracking-[0.3em]">Principal Office</span>
           </div>
         </div>
 
@@ -2840,7 +2946,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               { id: 'registers', label: 'Records', icon: Database },
               { id: 'management_hub', label: 'Admin Hub', icon: Shield },
               { id: 'timetable', label: 'Schedules', icon: Calendar },
-              { id: 'monthly_report', label: 'Reports', icon: FileText, color: 'text-indigo-600' },
+              { id: 'monthly_report', label: 'Reports', icon: FileText, color: 'text-teal-600' },
+              { id: 'teacher_pay', label: 'Teacher Pay', icon: Banknote },
               { id: 'alerts', label: 'Alert Center', icon: AlertCircle, color: 'text-rose-600' },
               { id: 'settings', label: 'Cloud Config', icon: Sparkles },
             ].map(link => {
@@ -2852,7 +2959,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   onClick={() => { handleTabChange(link.id as any); setSidebarOpen(false); }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl ${
                     isActive 
-                      ? 'text-white bg-emerald-600 shadow-lg shadow-emerald-200' 
+                      ? 'text-white bg-amber-600 shadow-lg shadow-amber-200' 
                       : 'text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                   }`}
                 >
@@ -2865,9 +2972,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             {/* Install Button in Sidebar */}
             <button
               onClick={onInstallApp}
-              className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl bg-indigo-50 text-indigo-700 hover:bg-indigo-100 mt-2 border border-indigo-100"
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl bg-teal-50 text-teal-700 hover:bg-teal-100 mt-2 border border-teal-100"
             >
-              <Download size={14} className="text-indigo-600" />
+              <Download size={14} className="text-teal-600" />
               Install App
             </button>
 
@@ -2902,7 +3009,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         {activeTab === 'dashboard' && (
           <div id="panel-principal-dashboard" className="space-y-8 animate-fade-in">
             {/* Greeting Header */}
-            <div className="bg-emerald-600 p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-emerald-700/50">
+            <div className="bg-amber-600 p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-amber-700/50">
               <h2 className="text-xl sm:text-2xl md:text-3xl font-black text-white tracking-tighter font-display uppercase leading-tight truncate whitespace-nowrap">
                 {userSession.role === 'developer' ? 'System Tracking Dashboard' : 'Academic Command Center'}
               </h2>
@@ -2968,14 +3075,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6 animate-fade-in pt-8 border-t border-slate-100">
                     
                     {[
-                      { label: 'Today Collection', val: `PKR ${todaysCollection.toLocaleString()}`, icon: <CreditCard size={16} className="text-violet-600" />, chip: 'bg-violet-50 border-violet-100' },
-                      { label: 'Today Attendance', val: `${todayPresent}/${todayAttendance.length}`, icon: <CheckCircle2 size={16} className="text-emerald-600" />, chip: 'bg-emerald-50 border-emerald-100' },
-                      { label: 'Fee Paid Students', val: paidStudentsCount, icon: <User size={16} className="text-blue-600" />, chip: 'bg-blue-50 border-blue-100' },
+                      { label: 'Today Collection', val: `PKR ${todaysCollection.toLocaleString()}`, icon: <CreditCard size={16} className="text-teal-600" />, chip: 'bg-teal-50 border-teal-100' },
+                      { label: 'Today Attendance', val: `${todayPresent}/${todayAttendance.length}`, icon: <CheckCircle2 size={16} className="text-amber-600" />, chip: 'bg-amber-50 border-amber-100' },
+                      { label: 'Fee Paid Students', val: paidStudentsCount, icon: <User size={16} className="text-teal-600" />, chip: 'bg-teal-50 border-teal-100' },
                       { label: 'Pending Students', val: pendingStudentsCount, icon: <AlertCircle size={16} className="text-rose-600" />, chip: 'bg-rose-50 border-rose-100' },
-                      { label: 'Teachers', val: teachers.length, icon: <Users size={16} className="text-indigo-600" />, chip: 'bg-indigo-50 border-indigo-100' },
+                      { label: 'Teachers', val: teachers.length, icon: <Users size={16} className="text-teal-600" />, chip: 'bg-teal-50 border-teal-100' },
                       { label: 'Students', val: students.length, icon: <Users size={16} className="text-teal-600" />, chip: 'bg-teal-50 border-teal-100' },
                       { label: 'Classes', val: classes.length, icon: <Award size={16} className="text-amber-600" />, chip: 'bg-amber-50 border-amber-100' },
-                      { label: 'Attendance Average', val: attendanceAvg, icon: <CheckCircle2 size={16} className="text-sky-600" />, chip: 'bg-sky-50 border-sky-100' },
+                      { label: 'Attendance Average', val: attendanceAvg, icon: <CheckCircle2 size={16} className="text-teal-600" />, chip: 'bg-teal-50 border-teal-100' },
                     ].map(stat => (
                       <div key={stat.label} className="p-4 md:p-5 bg-white border border-slate-200 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                         <div className="flex items-center gap-2.5 mb-2.5">
@@ -3006,18 +3113,18 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         </button>
                         <button
                           onClick={() => { setQuickCollectStudentId(''); setShowQuickCollectModal(true); }}
-                          className="p-5 bg-white border border-violet-100 rounded-2xl shadow-sm hover:shadow-lg hover:border-violet-300 hover:-translate-y-0.5 text-left transition-all cursor-pointer group"
+                          className="p-5 bg-white border border-teal-100 rounded-2xl shadow-sm hover:shadow-lg hover:border-teal-300 hover:-translate-y-0.5 text-left transition-all cursor-pointer group"
                           title="Click — Collect Fee + Receipt form opens"
                         >
                           <div className="flex items-center gap-3 mb-3">
-                            <div className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-100 flex items-center justify-center shrink-0"><CreditCard size={18} className="text-violet-500" /></div>
-                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-500 leading-tight">{currentMonthName} Fee<br />Total Paid</span>
+                            <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center shrink-0"><CreditCard size={18} className="text-teal-400" /></div>
+                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-teal-400 leading-tight">{currentMonthName} Fee<br />Total Paid</span>
                           </div>
                           <span className="text-2xl md:text-3xl font-black tracking-tighter text-slate-900 block tabular-nums">{totalCollectedMonth.toLocaleString()}</span>
                           <div className="mt-3 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                            <div className="h-full bg-violet-500 transition-all duration-500" style={{ width: `${monthProgress}%` }}></div>
+                            <div className="h-full bg-teal-400 transition-all duration-500" style={{ width: `${monthProgress}%` }}></div>
                           </div>
-                          <span className="text-[10px] font-black text-violet-500 uppercase tracking-widest mt-2 block">{monthProgress}% collected{todaysCollection > 0 ? ` · Today: PKR ${todaysCollection.toLocaleString()}` : ''}</span>
+                          <span className="text-[10px] font-black text-teal-400 uppercase tracking-widest mt-2 block">{monthProgress}% collected{todaysCollection > 0 ? ` · Today: PKR ${todaysCollection.toLocaleString()}` : ''}</span>
                         </button>
                         <button
                           onClick={() => openFeePaymentCenter()}
@@ -3037,7 +3144,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
                       <button
                         onClick={() => openFeePaymentCenter()}
-                        className="w-full p-5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
+                        className="w-full p-5 bg-gradient-to-r from-amber-600 to-teal-600 hover:from-amber-700 hover:to-teal-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
                       >
                         <div className="flex items-center gap-4 min-w-0">
                           <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
@@ -3045,16 +3152,16 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           </div>
                           <div className="min-w-0">
                             <p className="text-sm font-black uppercase tracking-widest">Fee Payment Center</p>
-                            <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest truncate">Month-wise Fee • Paper Fund • Other Funds • Dues — Everything in one place</p>
+                            <p className="text-[10px] font-bold text-amber-100 uppercase tracking-widest truncate">Month-wise Fee • Paper Fund • Other Funds • Dues — Everything in one place</p>
                           </div>
                         </div>
-                        <span className="px-4 py-2 bg-white text-emerald-700 text-[10px] font-black uppercase tracking-widest rounded-xl shrink-0 group-hover:scale-105 transition-transform">Open <ArrowRight size={12} className="inline ml-1" /></span>
+                        <span className="px-4 py-2 bg-white text-amber-700 text-[10px] font-black uppercase tracking-widest rounded-xl shrink-0 group-hover:scale-105 transition-transform">Open <ArrowRight size={12} className="inline ml-1" /></span>
                       </button>
 
                       {/* ⚡ QUICK COLLECT — form dashboard se attached */}
                       <button
                         onClick={() => { setQuickCollectStudentId(''); setShowQuickCollectModal(true); }}
-                        className="w-full p-5 bg-emerald-600 hover:bg-emerald-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
+                        className="w-full p-5 bg-amber-600 hover:bg-amber-700 rounded-2xl shadow-md text-left text-white transition-all cursor-pointer flex items-center justify-between gap-4 group"
                       >
                         <div className="flex items-center gap-4 min-w-0">
                           <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
@@ -3062,10 +3169,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           </div>
                           <div className="min-w-0">
                             <p className="text-sm font-black uppercase tracking-widest">⚡ Collect Fee + Receipt</p>
-                            <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest truncate">Pick a student — instantly collect School NSB Fee / Dues</p>
+                            <p className="text-[10px] font-bold text-amber-100 uppercase tracking-widest truncate">Pick a student — instantly collect School NSB Fee / Dues</p>
                           </div>
                         </div>
-                        <span className="px-4 py-2 bg-white text-emerald-700 text-[10px] font-black uppercase tracking-widest rounded-xl shrink-0 group-hover:scale-105 transition-transform">Open <ArrowRight size={12} className="inline ml-1" /></span>
+                        <span className="px-4 py-2 bg-white text-amber-700 text-[10px] font-black uppercase tracking-widest rounded-xl shrink-0 group-hover:scale-105 transition-transform">Open <ArrowRight size={12} className="inline ml-1" /></span>
                       </button>
                       </div>
 
@@ -3091,7 +3198,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <button
                   onClick={() => openAddModal('teacher')}
-                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50/25 text-sm font-semibold text-gray-700 hover:text-blue-700 transition-all text-left"
+                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-teal-500 hover:bg-teal-50/25 text-sm font-semibold text-gray-700 hover:text-teal-700 transition-all text-left"
                 >
                   <Users size={16} />
                   Teacher
@@ -3099,7 +3206,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                 <button
                   onClick={() => openAddModal('student')}
-                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50/25 text-sm font-semibold text-gray-700 hover:text-blue-700 transition-all text-left"
+                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-teal-500 hover:bg-teal-50/25 text-sm font-semibold text-gray-700 hover:text-teal-700 transition-all text-left"
                 >
                   <Users size={16} />
                   Student
@@ -3107,7 +3214,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                 <button
                   onClick={() => openAddModal('class')}
-                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50/25 text-sm font-semibold text-gray-700 hover:text-blue-700 transition-all text-left"
+                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-teal-500 hover:bg-teal-50/25 text-sm font-semibold text-gray-700 hover:text-teal-700 transition-all text-left"
                 >
                   <BookOpen size={16} />
                   Class
@@ -3115,7 +3222,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                 <button
                   onClick={() => openAddModal('timetable')}
-                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50/25 text-sm font-semibold text-gray-700 hover:text-blue-700 transition-all text-left"
+                  className="flex items-center justify-center gap-2.5 p-4 rounded-xl border border-gray-200 hover:border-teal-500 hover:bg-teal-50/25 text-sm font-semibold text-gray-700 hover:text-teal-700 transition-all text-left"
                 >
                   <Calendar size={16} />
                   Schedule
@@ -3134,7 +3241,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('teachers')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'teachers' 
-                    ? 'bg-indigo-600 text-white shadow-md' 
+                    ? 'bg-teal-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3145,7 +3252,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('students')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'students' 
-                    ? 'bg-indigo-600 text-white shadow-md' 
+                    ? 'bg-teal-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3156,7 +3263,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('classes')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'classes' 
-                    ? 'bg-indigo-600 text-white shadow-md' 
+                    ? 'bg-teal-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3167,7 +3274,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('coordinators')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'coordinators' 
-                    ? 'bg-indigo-600 text-white shadow-md' 
+                    ? 'bg-teal-600 text-white shadow-md' 
                     : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -3187,7 +3294,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     </div>
                     <button
                       onClick={() => openAddModal('teacher')}
-                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg rounded-xl"
+                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-teal-600 hover:bg-teal-700 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg rounded-xl"
                     >
                       <Plus size={14} />
                       Register New Teacher
@@ -3204,7 +3311,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={teacherSearch}
                       onChange={(e) => setTeacherSearch(e.target.value)}
                       placeholder="Search faculty by name, subject, or email..."
-                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 transition-all text-xs font-bold"
+                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-teal-600 transition-all text-xs font-bold"
                     />
                   </div>
 
@@ -3213,7 +3320,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     {filteredTeachers.map(t => {
                       const isExpanded = !!expandedTeachers[t.id];
                       return (
-                        <div key={t.id} className="bg-white border border-slate-200 overflow-hidden hover:border-indigo-300 transition-all shadow-xs group">
+                        <div key={t.id} className="bg-white border border-slate-200 overflow-hidden hover:border-teal-300 transition-all shadow-xs group">
                           <HoldActionWrapper
                             onEdit={() => openEditModal('teacher', t.id)}
                             onDelete={() => handleDeleteTeacher(t.id)}
@@ -3225,7 +3332,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             <div className="flex items-center gap-4">
                               <div>
                                 <h3 className="font-black text-slate-900 uppercase tracking-tight leading-none mb-1.5">{t.name}</h3>
-                                <p className="text-xs font-bold text-indigo-600 uppercase tracking-widest leading-none">{t.subject}</p>
+                                <p className="text-xs font-bold text-teal-600 uppercase tracking-widest leading-none">{t.subject}</p>
                               </div>
                             </div>
                             <ChevronDown className={`text-slate-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
@@ -3237,11 +3344,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               <div className="grid grid-cols-2 gap-3">
                                 <div className="p-3 bg-white border border-slate-200 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Login Status</span>
-                                  <span className="font-mono text-xs font-bold text-emerald-600 bg-emerald-50 px-1  uppercase tracking-tighter">Login using Name</span>
+                                  <span className="font-mono text-xs font-bold text-amber-600 bg-amber-50 px-1  uppercase tracking-tighter">Login using Name</span>
                                 </div>
                                 <div className="p-3 bg-white border border-slate-200 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Access Password</span>
-                                  <span className="font-mono text-xs font-bold text-emerald-600 bg-emerald-50 px-1">{t.password || 'nsb123'}</span>
+                                  <span className="font-mono text-xs font-bold text-amber-600 bg-amber-50 px-1">{t.password || 'nsb123'}</span>
                                 </div>
                                 <div className="p-3 bg-white border border-slate-200 col-span-2 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Contact Details</span>
@@ -3283,7 +3390,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     </div>
                     <button
                       onClick={() => openAddModal('student')}
-                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
+                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-amber-600 hover:bg-amber-700 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
                     >
                       <Plus size={14} />
                       Add Student
@@ -3298,7 +3405,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={studentSearch}
                         onChange={(e) => setStudentSearch(e.target.value)}
                         placeholder="Search student by name, roll, or parent name..."
-                        className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 transition-all text-xs font-bold"
+                        className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-amber-600 transition-all text-xs font-bold"
                       />
                     </div>
                     <select
@@ -3322,7 +3429,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           onEdit={() => openEditModal('student', s.id)}
                           onDelete={() => handleDeleteStudent(s.id)}
                           onDetail={() => setStudentDetailModal({ isOpen: true, student: s })}
-                          className="bg-white border border-slate-200 overflow-hidden hover:border-emerald-300 transition-all group font-sans"
+                          className="bg-white border border-slate-200 overflow-hidden hover:border-amber-300 transition-all group font-sans"
                         >
                           {/* Compact Header (Always Visible) */}
                           <div 
@@ -3341,7 +3448,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <h3 className="font-black text-slate-900 uppercase tracking-tight text-sm truncate leading-none mb-1">{s.name.split(' ').slice(0, 1).join(' ') || s.name}</h3>
                                 <div className="flex items-center gap-2">
                                   {s.category === 'Academy' && (
-                                    <span className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 font-black px-1.5 py-0.5 rounded-full uppercase tracking-tighter">Academy</span>
+                                    <span className="text-xs bg-teal-50 text-teal-700 border border-teal-100 font-black px-1.5 py-0.5 rounded-full uppercase tracking-tighter">Academy</span>
                                   )}
                                 </div>
                               </div>
@@ -3356,23 +3463,23 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <div className="p-3 bg-white border border-slate-200 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Guardian Contact</span>
                                   <p className="text-xs font-bold text-slate-700 flex items-center gap-2">
-                                    <Phone size={10} className="text-emerald-500" /> {s.parentPhone}
+                                    <Phone size={10} className="text-amber-500" /> {s.parentPhone}
                                   </p>
                                 </div>
                                 <div className="p-3 bg-white border border-slate-200 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Fee Settings</span>
-                                  <p className="text-xs font-bold text-indigo-600 flex items-center gap-2">
+                                  <p className="text-xs font-bold text-teal-600 flex items-center gap-2">
                                     <CreditCard size={10} /> Base Fee: {s.baseFee}
                                   </p>
                                 </div>
                               </div>
 
                               {s.category === 'Academy' && s.academySubjects && s.academySubjects.length > 0 && (
-                                <div className="p-3 bg-indigo-50/50 border border-indigo-100 shadow-xs">
-                                  <span className="text-xs font-black text-indigo-400 uppercase block mb-1.5">Academy Subjects Focus</span>
+                                <div className="p-3 bg-teal-50/50 border border-teal-100 shadow-xs">
+                                  <span className="text-xs font-black text-teal-400 uppercase block mb-1.5">Academy Subjects Focus</span>
                                   <div className="flex flex-wrap gap-1.5">
                                     {s.academySubjects.map((sub, idx) => (
-                                      <span key={idx} className="bg-white border border-indigo-200 text-indigo-700 text-xs font-bold px-2 py-0.5 uppercase ">
+                                      <span key={idx} className="bg-white border border-teal-200 text-teal-700 text-xs font-bold px-2 py-0.5 uppercase ">
                                         {sub}
                                       </span>
                                     ))}
@@ -3382,12 +3489,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                               <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-2">
                                 <div className="flex gap-2">
-                                  <button onClick={() => openEditModal('student', s.id)} className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-emerald-600 transition-all shadow-xs"><Edit2 size={12}/></button>
+                                  <button onClick={() => openEditModal('student', s.id)} className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-amber-600 transition-all shadow-xs"><Edit2 size={12}/></button>
                                   <button onClick={() => handleDeleteStudent(s.id)} className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-rose-600 transition-all shadow-xs"><Trash2 size={12}/></button>
                                 </div>
                                 <button 
                                   onClick={() => { setFeeSearch(s.name); handleTabChange('fees'); window.scrollTo({top:0, behavior:'smooth'}); }}
-                                  className="px-4 py-2 bg-emerald-600 text-white font-black text-xs uppercase tracking-widest hover:bg-slate-900 transition-all shadow-md "
+                                  className="px-4 py-2 bg-amber-600 text-white font-black text-xs uppercase tracking-widest hover:bg-slate-900 transition-all shadow-md "
                                 >
                                   Collect Fee ➔
                                 </button>
@@ -3410,7 +3517,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     </div>
                     <button
                       onClick={() => openAddModal('class')}
-                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-slate-900 hover:bg-indigo-600 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
+                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-slate-900 hover:bg-teal-600 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
                     >
                       <Plus size={14} />
                       Add New Section
@@ -3423,7 +3530,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       const studentCount = students.filter(s => s.classId === c.id).length;
                       return (
                         <div key={c.id} className="bg-white border border-slate-200 p-6 flex flex-col items-start gap-5 hover:shadow-xl transition-all font-sans relative overflow-hidden group">
-                          <div className="absolute top-0 right-0 w-16 h-16 bg-slate-50 -mr-8 -mt-8 rotate-45 group-hover:bg-indigo-50 transition-colors"></div>
+                          <div className="absolute top-0 right-0 w-16 h-16 bg-slate-50 -mr-8 -mt-8 rotate-45 group-hover:bg-teal-50 transition-colors"></div>
                           
                           <HoldActionWrapper
                             onEdit={() => openEditModal('class', c.id)}
@@ -3440,15 +3547,15 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             }}
                             className="flex items-center gap-5 relative z-10 w-full cursor-pointer"
                           >
-                            <div className="w-16 h-16 bg-slate-950 text-white flex flex-col items-center justify-center border-l-4 border-indigo-600 shrink-0 overflow-hidden">
+                            <div className="w-16 h-16 bg-slate-950 text-white flex flex-col items-center justify-center border-l-4 border-teal-600 shrink-0 overflow-hidden">
                               <span className="text-xs font-black w-full text-center px-1 uppercase leading-tight">{c.className}</span>
-                              <span className="text-xs font-bold uppercase tracking-widest bg-indigo-600 w-full text-center py-0.5 px-1 truncate">{c.section}</span>
+                              <span className="text-xs font-bold uppercase tracking-widest bg-teal-600 w-full text-center py-0.5 px-1 truncate">{c.section}</span>
                             </div>
                             <div className="flex-1 min-w-0">
                               <h4 className="text-xs font-black uppercase text-slate-400 tracking-widest mb-1 leading-none">Class Teacher</h4>
                               <p className="text-sm font-black text-slate-900 uppercase  mb-2 truncate">{classTeacher?.name || 'Vacant Slot'}</p>
                               <div className="flex items-center gap-2">
-                                <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 flex items-center gap-1 uppercase tracking-tighter">
+                                <span className="text-xs font-bold text-teal-600 bg-teal-50 px-2 py-0.5 flex items-center gap-1 uppercase tracking-tighter">
                                   <Users size={10}/> {studentCount} Enrolled
                                 </span>
                               </div>
@@ -3473,7 +3580,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           <div className="flex gap-2 w-full pt-4 border-t border-slate-50 relative z-10">
                             <button
                               onClick={() => openEditModal('class', c.id)}
-                              className="flex-1 py-1.5 bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-white transition-all border border-slate-100 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-1.5"
+                              className="flex-1 py-1.5 bg-slate-50 text-slate-400 hover:text-teal-600 hover:bg-white transition-all border border-slate-100 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-1.5"
                             >
                               <Edit2 size={12} /> Edit
                             </button>
@@ -3500,7 +3607,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     </div>
                     <button
                       onClick={() => openAddModal('coordinator')}
-                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-slate-900 hover:bg-indigo-600 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
+                      className="flex items-center justify-center gap-2 py-2.5 px-6 bg-slate-900 hover:bg-teal-600 text-white font-black text-xs uppercase tracking-widest transition-all shadow-lg"
                     >
                       <Plus size={14} />
                       Register New Coordinator
@@ -3517,7 +3624,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={coordinatorSearch}
                       onChange={(e) => setCoordinatorSearch(e.target.value)}
                       placeholder="Search coordinators by name, username, or email..."
-                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 transition-all text-xs font-bold"
+                      className="w-full pl-10 pr-4 py-3.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-teal-600 transition-all text-xs font-bold"
                     />
                   </div>
 
@@ -3526,7 +3633,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     {filteredCoordinators.map(c => {
                       const isExpanded = !!expandedCoordinators[c.id];
                       return (
-                        <div key={c.id} className="bg-white border border-slate-200 overflow-hidden hover:border-indigo-300 transition-all shadow-xs group">
+                        <div key={c.id} className="bg-white border border-slate-200 overflow-hidden hover:border-teal-300 transition-all shadow-xs group">
                           <HoldActionWrapper
                             onEdit={() => openEditModal('coordinator', c.id)}
                             onDelete={() => handleDeleteCoordinator(c.id)}
@@ -3538,7 +3645,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             <div className="flex items-center gap-4">
                               <div>
                                 <h3 className="font-black text-slate-900 uppercase tracking-tight leading-none mb-1.5">{c.name}</h3>
-                                <p className="text-xs font-bold text-indigo-600 uppercase tracking-widest leading-none">Academic Coordinator</p>
+                                <p className="text-xs font-bold text-teal-600 uppercase tracking-widest leading-none">Academic Coordinator</p>
                               </div>
                             </div>
                             <ChevronDown className={`text-slate-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
@@ -3550,11 +3657,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               <div className="grid grid-cols-2 gap-3">
                                 <div className="p-3 bg-white border border-slate-200 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Login Status</span>
-                                  <span className="font-mono text-xs font-bold text-emerald-600 bg-emerald-50 px-1  uppercase tracking-tighter">Login using Name</span>
+                                  <span className="font-mono text-xs font-bold text-amber-600 bg-amber-50 px-1  uppercase tracking-tighter">Login using Name</span>
                                 </div>
                                 <div className="p-3 bg-white border border-slate-200 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Access Password</span>
-                                  <span className="font-mono text-xs font-bold text-emerald-600 bg-emerald-50 px-1">{c.password || 'nsb123'}</span>
+                                  <span className="font-mono text-xs font-bold text-amber-600 bg-amber-50 px-1">{c.password || 'nsb123'}</span>
                                 </div>
                                 <div className="p-3 bg-white border border-slate-200 col-span-2 shadow-xs">
                                   <span className="text-xs font-black text-slate-400 uppercase block mb-1">Contact Details</span>
@@ -3685,7 +3792,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     setTimetable(prev => [...prev, ...newEntries]);
                     toast.success(`Auto-generated ${newEntries.length} timetable entries for ${cls.className}!`);
                   }}
-                  className="flex items-center justify-center gap-2 py-2 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white rounded-xl text-xs font-bold shadow-sm transition-all"
+                  className="flex items-center justify-center gap-2 py-2 px-4 bg-gradient-to-r from-amber-500 to-teal-500 hover:from-amber-600 hover:to-teal-600 text-white rounded-xl text-xs font-bold shadow-sm transition-all"
                 >
                   <Zap size={16} />
                   Auto-Generate
@@ -3693,7 +3800,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   id="add-timetable-entry-trigger"
                   onClick={() => openAddModal('timetable')}
-                  className="flex items-center justify-center gap-2 py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all"
+                  className="flex items-center justify-center gap-2 py-2 px-4 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all"
                 >
                   <Plus size={16} />
                   Schedule Period
@@ -3711,7 +3818,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   id="timetable-view-class-select"
                   value={selectedTimetableClass}
                   onChange={(e) => setSelectedTimetableClass(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 text-sm"
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:border-teal-500 text-sm"
                 >
                   <option value="" disabled>Select a Class</option>
                   {classes.map(cl => (
@@ -3747,7 +3854,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
              {/* Extra Periods Info */}
              <div className="flex flex-wrap gap-1.5 mt-2">
                 {allPeriods.length > 5 && (
-                  <span className="text-xs bg-emerald-50 text-emerald-700 font-semibold px-2.5 py-1 rounded-md uppercase tracking-wide">
+                  <span className="text-xs bg-amber-50 text-amber-700 font-semibold px-2.5 py-1 rounded-md uppercase tracking-wide">
                     {allPeriods.length - 5} Extra Period(s) Active
                   </span>
                 )}
@@ -3768,7 +3875,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             setTtPeriod(`Period ${existingCount + 1}`);
                             openAddModal('timetable');
                           }}
-                          className="flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white rounded text-xs font-black uppercase tracking-widest transition-all shadow-sm group"
+                          className="flex items-center gap-1 px-2 py-1 bg-teal-50 text-teal-600 hover:bg-teal-600 hover:text-white rounded text-xs font-black uppercase tracking-widest transition-all shadow-sm group"
                         >
                           <Plus size={12} className="group-hover:rotate-90 transition-transform" />
                           <span>Append Period</span>
@@ -3793,7 +3900,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                onDrop={e => handleDrop(e, { day, period: p })}
                                onClick={() => setSelectedSlot({day, period: p})}
                                className={`border border-slate-100 p-1 px-1.5 sm:p-4 transition-all rounded-r-xl ${entry ? 'shadow-xs' : 'hover:bg-slate-50/50'} cursor-pointer ${
-                                 selectedSlot?.day === day && selectedSlot?.period === p ? 'ring-2 ring-indigo-500' : ''
+                                 selectedSlot?.day === day && selectedSlot?.period === p ? 'ring-2 ring-teal-500' : ''
                                }`}
                                style={{
                                  borderLeft: `4px solid ${statusCol}`,
@@ -3839,7 +3946,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                                          toast.info(`Creating schedule slot for ${nextPeriodName} on ${day}. Fill timetable details to save!`);
                                        }}
-                                       className="p-0.5 sm:p-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-black text-[6px] sm:text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-0.5 sm:gap-1 shadow-sm px-1 sm:px-2"
+                                       className="p-0.5 sm:p-1 rounded bg-teal-600 hover:bg-teal-700 text-white font-black text-[6px] sm:text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-0.5 sm:gap-1 shadow-sm px-1 sm:px-2"
                                        title="Add Next Period"
                                      >
                                        <Plus size={8} className="w-1.5 h-1.5 sm:w-2.5 sm:h-2.5 stroke-[3]" /> <span className="hidden xs:inline">Add</span>
@@ -3888,7 +3995,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
                 <h1 className="text-2xl font-black text-slate-900 tracking-tighter uppercase flex items-center gap-3">
-                  <span className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-100 flex items-center justify-center shrink-0"><FileText size={18} className="text-violet-600" /></span>
+                  <span className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center shrink-0"><FileText size={18} className="text-teal-600" /></span>
                   Student Report
                 </h1>
                 <p className="text-[10px] font-black uppercase tracking-[0.25em] text-slate-400 mt-2">
@@ -3897,7 +4004,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               </div>
               <div className="flex flex-wrap items-center gap-2 print:hidden">
                 <select 
-                  className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase outline-none focus:border-indigo-500 shadow-sm"
+                  className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase outline-none focus:border-teal-500 shadow-sm"
                   value={reportClassFilter}
                   onChange={(e) => setReportClassFilter(e.target.value)}
                 >
@@ -3907,7 +4014,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   ))}
                 </select>
                 <select 
-                  className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase outline-none focus:border-indigo-500 shadow-sm"
+                  className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase outline-none focus:border-teal-500 shadow-sm"
                   value={new Date().getFullYear()}
                   onChange={() => {}}
                 >
@@ -3915,7 +4022,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <option value={new Date().getFullYear() - 1}>{new Date().getFullYear() - 1}</option>
                 </select>
                 <select 
-                  className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase outline-none focus:border-indigo-500 shadow-sm"
+                  className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase outline-none focus:border-teal-500 shadow-sm"
                   value={reportMonth}
                   onChange={(e) => setReportMonth(e.target.value as Month)}
                 >
@@ -3931,7 +4038,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
                   <h2 className="text-sm font-black uppercase tracking-widest text-slate-900 flex items-center gap-2">
-                    <Users size={18} className="text-indigo-600" /> 
+                    <Users size={18} className="text-teal-600" /> 
                     {reportClassFilter === 'all' ? 'All Classes' : `Class ${classes.find(c => c.id === reportClassFilter)?.className}`} Student Summary
                   </h2>
                   <div className="flex gap-2 print:hidden">
@@ -3985,13 +4092,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             <td className="px-1.5 py-2">
                               <div className="flex items-center gap-2">
                                 <div>
-                                  <p className="text-xs font-black text-slate-900 uppercase tracking-tight group-hover:text-indigo-600 transition-colors leading-tight">{s.name}</p>
+                                  <p className="text-xs font-black text-slate-900 uppercase tracking-tight group-hover:text-teal-600 transition-colors leading-tight">{s.name}</p>
                                 </div>
                               </div>
                             </td>
                             <td className="px-1.5 py-2 text-center">
                               {feeSummary?.pending === 0 ? (
-                                <span className="bg-emerald-50 text-emerald-600 text-xs font-black px-1.5 py-0.5 rounded-full uppercase border border-emerald-100">Paid</span>
+                                <span className="bg-amber-50 text-amber-600 text-xs font-black px-1.5 py-0.5 rounded-full uppercase border border-amber-100">Paid</span>
                               ) : (
                                 <span className="bg-rose-50 text-rose-600 text-xs font-black px-1.5 py-0.5 rounded-full uppercase border border-rose-100">Unpaid</span>
                               )}
@@ -4009,7 +4116,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     e.stopPropagation();
                                     handleSendFeeNotification(s, 'reminder', 0, '');
                                   }}
-                                  className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
+                                  className="p-1 text-amber-600 hover:bg-amber-50 rounded-md transition-colors"
                                   title="Send Fee Reminder"
                                 >
                                   <Send size={12} />
@@ -4049,11 +4156,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-5">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
                 <h2 className="text-xs font-black uppercase tracking-widest text-slate-500 flex items-center gap-2">
-                  <Bell size={14} className="text-emerald-600" /> Recent Office Alerts
+                  <Bell size={14} className="text-amber-600" /> Recent Office Alerts
                 </h2>
                 <div className="flex items-center gap-2">
                   {relevantNotifications.length > 0 && (
-                    <button onClick={handleMarkAllRead} className="text-[10px] font-black uppercase tracking-widest text-emerald-600 hover:underline">Mark Read</button>
+                    <button onClick={handleMarkAllRead} className="text-[10px] font-black uppercase tracking-widest text-amber-600 hover:underline">Mark Read</button>
                   )}
                   {relevantNotifications.length > 0 && <span className="text-slate-200">|</span>}
                   <button onClick={handleClearNotifications} className="text-[10px] font-black uppercase tracking-widest text-rose-600 hover:underline">Clear</button>
@@ -4073,16 +4180,16 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {relevantNotifications.map(notif => (
                     <div 
                       key={notif.id} 
-                      className={`p-3.5 rounded-xl border transition-colors ${notif.isUnread ? 'bg-emerald-50/50 border-emerald-100' : 'bg-slate-50/50 border-slate-100'}`}
+                      className={`p-3.5 rounded-xl border transition-colors ${notif.isUnread ? 'bg-amber-50/50 border-amber-100' : 'bg-slate-50/50 border-slate-100'}`}
                     >
                       <div className="flex items-start gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-emerald-600/10 flex items-center justify-center text-emerald-600 shrink-0">
+                        <div className="w-9 h-9 rounded-xl bg-amber-600/10 flex items-center justify-center text-amber-600 shrink-0">
                           {notif.type === 'attendance_complete' ? '✅' : notif.type === 'fee_due' ? '💰' : '📅'}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">
                             <h4 className="text-xs font-black text-slate-900 uppercase tracking-tight truncate">{notif.title}</h4>
-                            {notif.isUnread && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>}
+                            {notif.isUnread && <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0"></span>}
                           </div>
                           <p className="text-xs text-slate-500 font-medium leading-relaxed mt-1 break-words">{notif.message}</p>
                           <span className="text-[10px] font-mono text-slate-300 block mt-1.5">{notif.timestamp}</span>
@@ -4098,9 +4205,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-5">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
                 <h2 className="text-xs font-black uppercase tracking-widest text-slate-500 flex items-center gap-2">
-                  <FileText size={14} className="text-indigo-600" /> Teacher Diary Overview
+                  <FileText size={14} className="text-teal-600" /> Teacher Diary Overview
                 </h2>
-                <span className="text-[10px] font-black uppercase tracking-widest text-indigo-600">{assignments.length} Posted</span>
+                <span className="text-[10px] font-black uppercase tracking-widest text-teal-600">{assignments.length} Posted</span>
               </div>
 
               {assignments.length === 0 ? (
@@ -4123,8 +4230,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-full text-[9px] font-black uppercase tracking-widest">{assn.subject}</span>
-                                <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-full text-[9px] font-black uppercase tracking-widest">
+                                <span className="px-2 py-0.5 bg-teal-50 text-teal-600 border border-teal-100 rounded-full text-[9px] font-black uppercase tracking-widest">{assn.subject}</span>
+                                <span className="px-2 py-0.5 bg-amber-50 text-amber-600 border border-amber-100 rounded-full text-[9px] font-black uppercase tracking-widest">
                                   {cls ? `${cls.className}-${cls.section}` : assn.classId}
                                 </span>
                               </div>
@@ -4147,7 +4254,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 if (unpaidFees.length === 0) {
                   return (
                     <div className="py-20 text-center border-2 border-dashed border-slate-100 rounded-xl">
-                      <CheckCircle2 size={32} className="mx-auto text-emerald-500 mb-4 opacity-20" />
+                      <CheckCircle2 size={32} className="mx-auto text-amber-500 mb-4 opacity-20" />
                       <p className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">System Ledger Clear</p>
                     </div>
                   );
@@ -4217,7 +4324,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             }, ...prev]);
                             toast.success(`Alert dispatched for ${student.name}`);
                           }}
-                          className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-emerald-600 hover:bg-slate-900 text-white px-5 py-2.5 rounded text-xs font-black uppercase tracking-widest transition-all"
+                          className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-amber-600 hover:bg-slate-900 text-white px-5 py-2.5 rounded text-xs font-black uppercase tracking-widest transition-all"
                         >
                           <Phone size={14} fill="currentColor" />
                           Send Alert
@@ -4235,16 +4342,16 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         {activeTab === 'registers' && (
           <div id="panel-principal-registers" className="space-y-6 animate-fade-in pb-20">
             {/* Header Banner */}
-            <div className="bg-gradient-to-r from-emerald-600 to-teal-700 p-6 sm:p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-emerald-700/50 rounded-b-2xl text-white">
+            <div className="bg-gradient-to-r from-amber-600 to-teal-700 p-6 sm:p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-amber-700/50 rounded-b-2xl text-white">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>
                   <h2 className="text-xl sm:text-2xl font-black tracking-tight font-display uppercase leading-none flex items-center gap-3 whitespace-nowrap">
-                    <Database size={24} className="text-emerald-200 shrink-0" />
+                    <Database size={24} className="text-amber-200 shrink-0" />
                     School Registers & Records
                   </h2>
                 </div>
-                <div className="flex items-center gap-2 bg-emerald-900/40 backdrop-blur-sm px-4 py-2 rounded-xl border border-emerald-400/20 text-xs font-bold">
-                  <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-pulse" />
+                <div className="flex items-center gap-2 bg-amber-900/40 backdrop-blur-sm px-4 py-2 rounded-xl border border-amber-400/20 text-xs font-bold">
+                  <span className="w-2.5 h-2.5 bg-amber-400 rounded-full animate-pulse" />
                   <span>Real-time Ledger Active</span>
                 </div>
               </div>
@@ -4256,7 +4363,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setRegistersSubTab('fees')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-widest transition-all flex items-center justify-center gap-2.5 rounded-xl cursor-pointer ${
                   registersSubTab === 'fees'
-                    ? 'bg-emerald-600 text-white shadow-md scale-[1.01]'
+                    ? 'bg-amber-600 text-white shadow-md scale-[1.01]'
                     : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -4266,7 +4373,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setRegistersSubTab('attendance')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-widest transition-all flex items-center justify-center gap-2.5 rounded-xl cursor-pointer ${
                   registersSubTab === 'attendance'
-                    ? 'bg-emerald-600 text-white shadow-md scale-[1.01]'
+                    ? 'bg-amber-600 text-white shadow-md scale-[1.01]'
                     : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -4276,7 +4383,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setRegistersSubTab('results')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-widest transition-all flex items-center justify-center gap-2.5 rounded-xl cursor-pointer ${
                   registersSubTab === 'results'
-                    ? 'bg-violet-600 text-white shadow-md scale-[1.01]'
+                    ? 'bg-teal-600 text-white shadow-md scale-[1.01]'
                     : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
                 }`}
               >
@@ -4291,7 +4398,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 sm:gap-4 mb-2">
                   <div>
                     <h2 className="text-lg sm:text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
-                      <CreditCard className="text-emerald-600 shrink-0" size={20} /> Student Fee Collection
+                      <CreditCard className="text-amber-600 shrink-0" size={20} /> Student Fee Collection
                     </h2>
                   </div>
                   <div className="flex items-center gap-2.5 w-full md:w-auto">
@@ -4300,13 +4407,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         setQuickCollectStudentId(students[0]?.id || '');
                         setShowQuickCollectModal(true);
                       }}
-                      className="flex-1 md:flex-none px-4 sm:px-5 py-2.5 bg-emerald-600 text-white text-xs sm:text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-slate-900 transition-all shadow-md rounded-xl cursor-pointer"
+                      className="flex-1 md:flex-none px-4 sm:px-5 py-2.5 bg-amber-600 text-white text-xs sm:text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-slate-900 transition-all shadow-md rounded-xl cursor-pointer"
                     >
                       <Plus size={16} /> ⚡ Collect Fee
                     </button>
                     <button
                       onClick={() => { setFeeReminderSentIds(new Set()); setFeeReminderModal(true); }}
-                      className="flex-1 md:flex-none px-4 sm:px-5 py-2.5 bg-white border-2 border-emerald-600 text-emerald-700 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-emerald-600 hover:text-white transition-all shadow-md rounded-xl cursor-pointer"
+                      className="flex-1 md:flex-none px-4 sm:px-5 py-2.5 bg-white border-2 border-amber-600 text-amber-700 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-amber-600 hover:text-white transition-all shadow-md rounded-xl cursor-pointer"
                       title="Send fee reminders to all parents with pending fees"
                     >
                       <Bell size={16} /> 🔔 Fee Reminders
@@ -4319,7 +4426,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         setBulkDueMonth(`${MONTHS[new Date().getMonth()]} ${new Date().getFullYear()}`);
                         setShowBulkDueModal(true);
                       }}
-                      className="flex-1 md:flex-none px-4 sm:px-5 py-2.5 bg-indigo-600 text-white text-xs sm:text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-indigo-700 transition-all shadow-md rounded-xl cursor-pointer"
+                      className="flex-1 md:flex-none px-4 sm:px-5 py-2.5 bg-teal-600 text-white text-xs sm:text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-teal-700 transition-all shadow-md rounded-xl cursor-pointer"
                       title="Apply a due (Paper Fund / Annual Fee / Exam Fee) to EVERY student in a class at once"
                     >
                       <Users size={16} /> 👥 Apply Due to Class
@@ -4335,7 +4442,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       { key: 'all', label: 'All', active: 'bg-slate-900 text-white border-slate-900 shadow-md', idle: 'bg-white text-slate-500 border-slate-200 hover:border-slate-400' },
                       { key: 'unpaid', label: 'Unpaid', active: 'bg-rose-500 text-white border-rose-500 shadow-md', idle: 'bg-white text-rose-500 border-rose-200 hover:border-rose-400' },
                       { key: 'partial', label: 'Remaining', active: 'bg-amber-500 text-white border-amber-500 shadow-md', idle: 'bg-white text-amber-500 border-amber-200 hover:border-amber-400' },
-                      { key: 'paid', label: 'Paid', active: 'bg-emerald-600 text-white border-emerald-600 shadow-md', idle: 'bg-white text-emerald-600 border-emerald-200 hover:border-emerald-400' },
+                      { key: 'paid', label: 'Paid', active: 'bg-amber-600 text-white border-amber-600 shadow-md', idle: 'bg-white text-amber-600 border-amber-200 hover:border-amber-400' },
                     ].map(opt => (
                       <button
                         key={opt.key}
@@ -4353,7 +4460,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <select
                     value={recordsFeeClassFilter}
                     onChange={(e) => setRecordsFeeClassFilter(e.target.value)}
-                    className="sm:w-48 py-2.5 px-3 text-xs font-black uppercase tracking-widest rounded-xl border border-slate-200 bg-white text-slate-700 cursor-pointer focus:outline-none focus:border-emerald-500 transition-all"
+                    className="sm:w-48 py-2.5 px-3 text-xs font-black uppercase tracking-widest rounded-xl border border-slate-200 bg-white text-slate-700 cursor-pointer focus:outline-none focus:border-amber-500 transition-all"
                   >
                     <option value="all">All Classes</option>
                     {[...classes].sort((a, b) => a.className.localeCompare(b.className) || a.section.localeCompare(b.section)).map(c => (
@@ -4370,7 +4477,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     value={recordsFeeSearch}
                     onChange={(e) => setRecordsFeeSearch(e.target.value)}
                     placeholder="Search by student name, roll no, or class..."
-                    className="w-full pl-9 pr-3 py-2.5 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 transition-all"
+                    className="w-full pl-9 pr-3 py-2.5 text-xs font-bold rounded-xl border border-slate-200 bg-white text-slate-700 placeholder:text-slate-400 focus:outline-none focus:border-amber-500 transition-all"
                   />
                 </div>
 
@@ -4412,7 +4519,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none">Class {className} ({classStudents.length})</span>
                                   <button
                                     onClick={(e) => { e.stopPropagation(); openClassDuesModal(classId === 'other' ? undefined : classId); }}
-                                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1 cursor-pointer shrink-0"
+                                    className="px-2.5 py-1 bg-teal-600 hover:bg-teal-700 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1 cursor-pointer shrink-0"
                                     title={`Class ${className} ke students ko Due/Paper Fund lagayein ya collect karein`}
                                   >
                                     <Users size={10} /> Apply Dues
@@ -4429,7 +4536,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   const photo = getStudentPhoto(student);
 
                                   return (
-                                    <div key={student.id} className={`bg-white transition-all ${isExpanded ? 'bg-indigo-50/10' : ''}`}>
+                                    <div key={student.id} className={`bg-white transition-all ${isExpanded ? 'bg-teal-50/10' : ''}`}>
                                       <HoldActionWrapper
                                         onEdit={() => openEditModal('student', String(student.id))}
                                         onDelete={() => handleDeleteStudent(String(student.id))}
@@ -4446,7 +4553,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                             ) : (
                                               <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-300"><User size={18} /></div>
                                             )}
-                                            <div className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-white ${isPaidCurrent ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
+                                            <div className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-white ${isPaidCurrent ? 'bg-amber-500' : 'bg-rose-500'}`}></div>
                                           </div>
                                           <div className="min-w-0">
                                             <h4 className="font-black text-slate-900 uppercase tracking-tight text-xs truncate mb-0.5">{student.name}</h4>
@@ -4463,7 +4570,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                             <div className="grid grid-cols-2 gap-2">
                                               <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
                                                 <span className="block text-[9px] font-black text-slate-400 uppercase leading-none mb-1">Status</span>
-                                                <span className={`text-[10px] font-black uppercase ${isPaidCurrent ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                <span className={`text-[10px] font-black uppercase ${isPaidCurrent ? 'text-amber-600' : 'text-rose-600'}`}>
                                                   {isPaidCurrent ? 'Full Paid' : totalPaid > 0 ? `Partial · Remaining PKR ${Math.max(0, monthlyFee - totalPaid).toLocaleString()}` : 'Unpaid'}
                                                 </span>
                                               </div>
@@ -4480,7 +4587,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                 setQuickCollectAmount(String(student.baseFee || 5500));
                                                 setShowQuickCollectModal(true);
                                               }}
-                                              className="w-full py-3 bg-emerald-600 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                                              className="w-full py-3 bg-amber-600 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
                                             >
                                               <Plus size={14} /> Collect Payment
                                             </button>
@@ -4520,7 +4627,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                 {hf ? (
                                                   <button
                                                     onClick={() => setMonthHistoryFilter(null)}
-                                                    className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-600 text-[9px] font-black uppercase rounded-md hover:bg-indigo-100 transition-colors cursor-pointer"
+                                                    className="px-2 py-0.5 bg-teal-50 border border-teal-200 text-teal-600 text-[9px] font-black uppercase rounded-md hover:bg-teal-100 transition-colors cursor-pointer"
                                                   >
                                                     ✕ All Months
                                                   </button>
@@ -4538,11 +4645,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                         <span className="block text-[10px] font-black text-slate-900 uppercase leading-none mb-1">{f.month} Payment</span>
                                                         <span className="block text-[9px] font-bold text-slate-400 uppercase tabular-nums">{f.paidDate}</span>
                                                       </div>
-                                                      <span className="text-xs font-black text-emerald-600">PKR {Number(f.amount).toLocaleString()}</span>
+                                                      <span className="text-xs font-black text-amber-600">PKR {Number(f.amount).toLocaleString()}</span>
 <div className="flex items-center gap-1.5 shrink-0">
                                                         <button
                                                           onClick={(e) => { e.stopPropagation(); openFeeActionModal(f); }}
-                                                          className="w-7 h-7 rounded-md bg-white border border-indigo-200 text-indigo-500 hover:bg-indigo-500 hover:text-white transition-all cursor-pointer flex items-center justify-center"
+                                                          className="w-7 h-7 rounded-md bg-white border border-teal-200 text-teal-500 hover:bg-teal-500 hover:text-white transition-all cursor-pointer flex items-center justify-center"
                                                           title="Edit this receipt"
                                                         >
                                                           <Edit2 size={10} />
@@ -4572,7 +4679,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                           <span className="block text-[10px] font-black text-slate-900 uppercase leading-none mb-0.5 truncate">{d.desc}</span>
                                                           <span className="block text-[9px] font-bold text-slate-400 uppercase tabular-nums">{d.month} {d.year} · Added {formatDateDDMMYY(d.date)}</span>
                                                         </div>
-                                                        <span className={`text-[10px] font-black shrink-0 ${d.status === 'paid' ? 'text-emerald-600' : d.status === 'waived' ? 'text-amber-600' : 'text-rose-600'}`}>
+                                                        <span className={`text-[10px] font-black shrink-0 ${d.status === 'paid' ? 'text-amber-600' : d.status === 'waived' ? 'text-amber-600' : 'text-rose-600'}`}>
                                                           {d.status === 'paid' ? 'PAID' : d.status === 'waived' ? 'WAIVED' : 'PENDING'}: PKR {(Number(d.amount) || 0).toLocaleString()}
                                                         </span>
                                                       </div>
@@ -4639,7 +4746,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     <tr className="bg-slate-50">
                                       <td colSpan={3} className="px-6 py-3 border-y border-slate-200/60">
                                         <div className="flex items-center gap-2">
-                                          <div className="w-1.5 h-4 bg-emerald-500 rounded-full"></div>
+                                          <div className="w-1.5 h-4 bg-amber-500 rounded-full"></div>
                                           <span className="text-[10px] font-black text-slate-900 uppercase tracking-[0.15em]">Class {className} — {classStudents.length} Students</span>
                                         </div>
                                       </td>
@@ -4658,7 +4765,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                       <React.Fragment key={student.id}>
                                         <tr
                                           onClick={() => setExpandedStudentFeeId(isExpanded ? null : String(student.id))}
-                                          className={`hover:bg-indigo-50/30 transition-all cursor-pointer group ${isExpanded ? 'bg-indigo-50/20' : ''}`}
+                                          className={`hover:bg-teal-50/30 transition-all cursor-pointer group ${isExpanded ? 'bg-teal-50/20' : ''}`}
                                         >
                                           <td className="px-6 py-4">
                                             <div className="flex items-center gap-4">
@@ -4674,10 +4781,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                     <User size={18} />
                                                   </div>
                                                 )}
-                                                <div className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white shadow-sm ${isPaidCurrent ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
+                                                <div className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white shadow-sm ${isPaidCurrent ? 'bg-amber-500' : 'bg-rose-500'}`}></div>
                                               </div>
                                               <div>
-                                                <span className="block font-black text-slate-900 uppercase tracking-tight text-xs leading-none mb-1 group-hover:text-emerald-600 transition-colors">
+                                                <span className="block font-black text-slate-900 uppercase tracking-tight text-xs leading-none mb-1 group-hover:text-amber-600 transition-colors">
                                                   {student.name}
                                                 </span>
                                                 <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest block">
@@ -4689,7 +4796,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                           <td className="px-6 py-4">
                                             {isPaidCurrent ? (
                                               <div className="flex items-center gap-2">
-                                                <div className="px-2.5 py-1.5 bg-emerald-50 text-emerald-700 text-[10px] font-black tracking-wider rounded-lg border border-emerald-100 uppercase flex items-center gap-1.5 w-fit shadow-xs">
+                                                <div className="px-2.5 py-1.5 bg-amber-50 text-amber-700 text-[10px] font-black tracking-wider rounded-lg border border-amber-100 uppercase flex items-center gap-1.5 w-fit shadow-xs">
                                                   <CheckCircle2 size={12} /> Full Paid
                                                 </div>
                                               </div>
@@ -4712,7 +4819,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                   setQuickCollectAmount(String(student.baseFee || 5500));
                                                   setShowQuickCollectModal(true);
                                                 }}
-                                                className="h-8 px-3 bg-emerald-600 hover:bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                                className="h-8 px-3 bg-amber-600 hover:bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
                                               >
                                                 <Plus size={12} /> Collect
                                               </button>
@@ -4726,12 +4833,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                         {isExpanded && (
                                           <tr>
                                             <td colSpan={3} className="p-0 border-none overflow-hidden">
-                                              <div className="px-6 pb-6 pt-2 bg-indigo-50/10 border-b border-slate-100 animate-in fade-in slide-in-from-top-2 duration-300">
+                                              <div className="px-6 pb-6 pt-2 bg-teal-50/10 border-b border-slate-100 animate-in fade-in slide-in-from-top-2 duration-300">
                                                 <div className="bg-white p-6 rounded-3xl border border-slate-200 space-y-5 shadow-lg">
                                                   {/* History Header */}
                                                   <div className="flex items-center justify-between border-b border-slate-100 pb-4">
                                                     <div className="flex items-center gap-3">
-                                                      <div className="w-10 h-10 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600">
+                                                      <div className="w-10 h-10 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-600">
                                                         <Receipt size={20} />
                                                       </div>
                                                       <div>
@@ -4755,7 +4862,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                           const text = `Fee Reminder: A payment is pending for ${student.name}. Balance: ${monthlyFee - totalPaid}. Please clear it soon. - NSB Academy`;
                                                           if (student.parentPhone) window.open(`https://api.whatsapp.com/send?phone=${student.parentPhone.replace(/[^0-9]/g, '')}&text=${encodeURIComponent(text)}`, '_blank');
                                                         }}
-                                                        className="p-2 bg-white border border-slate-200 hover:border-emerald-500 hover:text-emerald-600 text-slate-700 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-sm"
+                                                        className="p-2 bg-white border border-slate-200 hover:border-amber-500 hover:text-amber-600 text-slate-700 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-sm"
                                                         title="Send WhatsApp Fee Reminder"
                                                       >
                                                         <MessageSquare size={14} />
@@ -4789,7 +4896,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                                           {hfD && (
                                                             <button
                                                               onClick={() => setMonthHistoryFilter(null)}
-                                                              className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-600 text-[9px] font-black uppercase rounded-md hover:bg-indigo-100 transition-colors cursor-pointer"
+                                                              className="px-2 py-0.5 bg-teal-50 border border-teal-200 text-teal-600 text-[9px] font-black uppercase rounded-md hover:bg-teal-100 transition-colors cursor-pointer"
                                                             >
                                                               ✕ All Months
                                                             </button>
@@ -4845,7 +4952,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <select
                           value={attendanceFilterClass}
                           onChange={(e) => setAttendanceFilterClass(e.target.value)}
-                          className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 text-xs font-bold uppercase tracking-wider focus:outline-none focus:border-emerald-500 rounded-xl appearance-none cursor-pointer"
+                          className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 text-xs font-bold uppercase tracking-wider focus:outline-none focus:border-amber-500 rounded-xl appearance-none cursor-pointer"
                         >
                           <option value="all">All Classes</option>
                           {classes.map(c => {
@@ -4867,7 +4974,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             setShowMarkAttendanceModal(true);
                             setMarkAttendanceClassId(attendanceFilterClass !== 'all' ? attendanceFilterClass : '');
                           }}
-                          className="px-3 py-1.5 bg-slate-900 text-white text-[11px] font-extrabold uppercase tracking-wider flex items-center justify-center hover:bg-emerald-600 transition-all shadow-xs rounded-lg cursor-pointer whitespace-nowrap"
+                          className="px-3 py-1.5 bg-slate-900 text-white text-[11px] font-extrabold uppercase tracking-wider flex items-center justify-center hover:bg-amber-600 transition-all shadow-xs rounded-lg cursor-pointer whitespace-nowrap"
                         >
                           Mark Attendance
                         </button>
@@ -4876,7 +4983,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           <button
                             onClick={handleSendBulkAbsenceWhatsApp}
                             title="WhatsApp Absents"
-                            className="p-1.5 bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-sm rounded-lg cursor-pointer flex items-center justify-center"
+                            className="p-1.5 bg-amber-600 text-white hover:bg-amber-700 transition-all shadow-sm rounded-lg cursor-pointer flex items-center justify-center"
                           >
                             <MessageSquare size={14} />
                           </button>
@@ -4896,7 +5003,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               setAttendanceFilterDate(e.target.value);
                               if (e.target.value) setAttendanceShowAllDates(false);
                             }}
-                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 text-xs font-bold uppercase tracking-wider focus:outline-none focus:border-emerald-500 rounded-xl"
+                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 text-xs font-bold uppercase tracking-wider focus:outline-none focus:border-amber-500 rounded-xl"
                           />
                         </div>
                       </div>
@@ -4911,7 +5018,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={attendanceSearch}
                       onChange={(e) => setAttendanceSearch(e.target.value)}
                       placeholder="Search attendance list by student name or roll number..."
-                      className="w-full pl-10 pr-4 py-2 text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 transition-all placeholder:text-slate-400 placeholder:font-normal"
+                      className="w-full pl-10 pr-4 py-2 text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-amber-500 transition-all placeholder:text-slate-400 placeholder:font-normal"
                     />
                     {attendanceSearch && (
                       <button
@@ -4931,7 +5038,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">
                         Daily Attendance Average
                       </p>
-                      <h3 className="text-3xl font-black text-emerald-600">
+                      <h3 className="text-3xl font-black text-amber-600">
                         {attendanceFilterClass === 'all'
                           ? (filteredAttendance.length > 0
                             ? Math.round((filteredAttendance.filter(a => a.status === 'present').length / filteredAttendance.length) * 100)
@@ -4943,7 +5050,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             })()}%
                       </h3>
                     </div>
-                    <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center text-emerald-600">
+                    <div className="w-12 h-12 rounded-full bg-amber-50 flex items-center justify-center text-amber-600">
                       <TrendingUp size={24} />
                     </div>
                   </div>
@@ -4959,10 +5066,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                       if (absents.length === 0) {
                         return (
-                          <div className="flex items-center justify-between p-4 bg-emerald-50 border border-emerald-100 rounded-xl">
+                          <div className="flex items-center justify-between p-4 bg-amber-50 border border-amber-100 rounded-xl">
                             <div className="flex items-center gap-2">
-                              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                              <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">No Absentees Today 🎉</p>
+                              <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                              <p className="text-xs font-black text-amber-600 uppercase tracking-widest">No Absentees Today 🎉</p>
                             </div>
                           </div>
                         );
@@ -4986,7 +5093,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     return st && st.parentPhone;
                                   }).length} parents.`);
                                 }}
-                                className="px-3 py-1.5 bg-emerald-600 text-white text-[9px] font-black uppercase tracking-wider rounded-lg hover:bg-emerald-700 transition-all shadow-sm cursor-pointer"
+                                className="px-3 py-1.5 bg-amber-600 text-white text-[9px] font-black uppercase tracking-wider rounded-lg hover:bg-amber-700 transition-all shadow-sm cursor-pointer"
                               >
                                 <Send size={12} /> WhatsApp All
                               </button>
@@ -5014,7 +5121,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">
                                         {st?.classId ? getClassName(st.classId) : 'N/A'} | Roll: {st?.rollNumber || 'N/A'}
                                       </p>
-                                      <p className={`text-[9px] font-black uppercase tracking-wider ${hasPhone ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                      <p className={`text-[9px] font-black uppercase tracking-wider ${hasPhone ? 'text-amber-600' : 'text-rose-500'}`}>
                                         {hasPhone ? phone : 'No Phone Number'}
                                       </p>
                                     </div>
@@ -5024,7 +5131,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     disabled={!st || !hasPhone}
                                     title={hasPhone ? `Send WhatsApp to ${st?.name}'s parent` : 'No phone number'}
                                     className={`p-2 flex items-center justify-center rounded-lg transition-all shadow-sm active:scale-95 cursor-pointer shrink-0 ${
-                                      hasPhone ? 'bg-emerald-600 hover:bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                                      hasPhone ? 'bg-amber-600 hover:bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                                     }`}
                                   >
                                     <Send size={12} />
@@ -5043,18 +5150,18 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="bg-white border border-slate-200 shadow-sm overflow-hidden rounded-2xl">
                   <div className="p-3.5 sm:p-5 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
                     <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 flex items-center gap-2">
-                      <CheckCircle2 size={16} className="text-emerald-600 shrink-0" /> Attendance Ledger List
-                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-lg font-black tabular-nums">
+                      <CheckCircle2 size={16} className="text-amber-600 shrink-0" /> Attendance Ledger List
+                      <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-lg font-black tabular-nums">
                         {attendanceFilterDate}
                       </span>
                       {attendanceFilterClass !== 'all' && (
-                        <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-lg font-black tabular-nums">
+                        <span className="px-2 py-0.5 bg-teal-100 text-teal-700 rounded-lg font-black tabular-nums">
                           {getClassName(attendanceFilterClass)} · {attendanceRosterRows.length} Student(s)
                         </span>
                       )}
                     </h3>
 <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
+                    <span className="w-2 h-2 bg-amber-500 rounded-full animate-ping" />
                     <span className="text-xs font-black text-slate-500 uppercase tracking-wider">
                       Live Sync
                     </span>
@@ -5068,7 +5175,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           onClick={() => setAttendanceStatusFilter(filter as 'all' | 'present' | 'absent' | 'late' | 'leave')}
                           className={`px-2.5 py-1 text-[9px] font-black uppercase rounded-lg transition-all ${
                             attendanceStatusFilter === filter
-                              ? 'bg-emerald-600 text-white shadow-sm'
+                              ? 'bg-amber-600 text-white shadow-sm'
                               : 'text-slate-500 hover:text-slate-700'
                           }`}
                         >
@@ -5119,7 +5226,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                         {sName}
                                       </h4>
                                       <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mt-0.5">
-                                        {sRoll} {isRoster && <span className="text-indigo-500">· {sClass}</span>}
+                                        {sRoll} {isRoster && <span className="text-teal-500">· {sClass}</span>}
                                       </p>
                                     </div>
                                   </div>
@@ -5130,7 +5237,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     {status === 'absent' && student && (
                                       <button
                                         onClick={() => handleSendIndividualWhatsApp(student, record!.date)}
-                                        className="p-1.5 bg-emerald-100 text-emerald-800 hover:bg-emerald-600 hover:text-white rounded-lg flex items-center justify-center transition-colors cursor-pointer"
+                                        className="p-1.5 bg-amber-100 text-amber-700 hover:bg-amber-600 hover:text-white rounded-lg flex items-center justify-center transition-colors cursor-pointer"
                                         title="Send WhatsApp Alert to Parent"
                                       >
                                         <Phone size={14} fill="currentColor" />
@@ -5228,7 +5335,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                             {sName}
                                           </span>
                                           <span className="text-xs text-slate-500 font-bold uppercase tracking-wider block mt-0.5">
-                                            {sRoll} {isRoster && <span className="text-indigo-500">· {sClass}</span>}
+                                            {sRoll} {isRoster && <span className="text-teal-500">· {sClass}</span>}
                                           </span>
                                         </div>
                                       </div>
@@ -5236,7 +5343,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                                     <td className="px-5 py-4">
                                       <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-100 px-2.5 py-1 rounded-full">
-                                        <User size={11} className="text-indigo-500" />
+                                        <User size={11} className="text-teal-500" />
                                         {record?.markedBy || (isRoster ? 'Not Marked Yet' : '—')}
                                       </span>
                                     </td>
@@ -5245,7 +5352,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                       {status === 'absent' && student && record && (
                                         <button
                                           onClick={() => handleSendIndividualWhatsApp(student, record.date)}
-                                          className="p-1.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-all cursor-pointer"
+                                          className="p-1.5 bg-amber-100 text-amber-700 hover:bg-amber-600 hover:text-white rounded-lg transition-all cursor-pointer"
                                           title="Send WhatsApp Alert to Parent"
                                         >
                                           <Phone size={14} fill="currentColor" />
@@ -5307,7 +5414,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <select
                         value={resultsClassFilter}
                         onChange={(e) => setResultsClassFilter(e.target.value)}
-                        className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 text-xs font-bold uppercase tracking-wider focus:outline-none focus:border-violet-500 rounded-xl appearance-none cursor-pointer"
+                        className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 text-xs font-bold uppercase tracking-wider focus:outline-none focus:border-teal-400 rounded-xl appearance-none cursor-pointer"
                       >
                         <option value="all">All Classes</option>
                         {classes.map(c => (
@@ -5320,13 +5427,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                   <div className="flex items-center gap-2.5">
                     <div className="relative flex-1">
-                      <Award className="absolute left-3 top-1/2 -translate-y-1/2 text-violet-400" size={14} />
+                      <Award className="absolute left-3 top-1/2 -translate-y-1/2 text-teal-400" size={14} />
                       <input
                         list="results-exam-names-list"
                         value={resultsExamDraft}
                         onChange={(e) => setResultsExamDraft(e.target.value)}
                         placeholder="Exam / Test name — e.g. 1st Term, 2nd Term, 3rd Term, Annual, Monthly Test..."
-                        className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 text-xs font-bold text-slate-800 focus:outline-none focus:border-violet-500 rounded-xl"
+                        className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 text-xs font-bold text-slate-800 focus:outline-none focus:border-teal-400 rounded-xl"
                       />
                       <datalist id="results-exam-names-list">
                         {Array.from(new Set([...availableExamTypes, ...EXAM_NAME_OPTIONS])).filter(Boolean).map(opt => <option key={opt} value={opt} />)}
@@ -5344,7 +5451,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           toast.success(`Reports built for "${exam}" — ${count} student(s) with marks.`);
                         }
                       }}
-                      className="px-4 py-2.5 bg-violet-600 text-white text-[11px] font-extrabold uppercase tracking-wider flex items-center justify-center hover:bg-violet-700 transition-all shadow-xs rounded-xl cursor-pointer whitespace-nowrap"
+                      className="px-4 py-2.5 bg-teal-600 text-white text-[11px] font-extrabold uppercase tracking-wider flex items-center justify-center hover:bg-teal-700 transition-all shadow-xs rounded-xl cursor-pointer whitespace-nowrap"
                     >
                       Build Reports
                     </button>
@@ -5356,7 +5463,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-4 sm:p-5">
                       <div className="flex items-center justify-between gap-2 mb-3">
                         <div className="flex items-center gap-2">
-                          <div className="bg-violet-100 text-violet-700 p-1.5 rounded-lg"><Award size={16} /></div>
+                          <div className="bg-teal-100 text-teal-700 p-1.5 rounded-lg"><Award size={16} /></div>
                           <h3 className="text-sm font-bold text-slate-700">Saved Tests / Exams (entered by teachers)</h3>
                         </div>
                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Click to track</span>
@@ -5370,12 +5477,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             .sort((a, b) => String(a.name).localeCompare(String(b.name)));
                           return (
                             <div key={tn} className="flex flex-col gap-1 max-w-full">
-                              <button type="button" onClick={() => { setResultsExamDraft(tn); setResultsExam(tn); setOpenExamChip(isOpen ? null : tn); }} className="text-left bg-violet-50 border border-violet-100 hover:bg-violet-100 text-violet-800 text-xs font-bold px-3 py-2 rounded-xl flex flex-col gap-0.5 cursor-pointer">
+                              <button type="button" onClick={() => { setResultsExamDraft(tn); setResultsExam(tn); setOpenExamChip(isOpen ? null : tn); }} className="text-left bg-teal-50 border border-teal-100 hover:bg-teal-100 text-teal-800 text-xs font-bold px-3 py-2 rounded-xl flex flex-col gap-0.5 cursor-pointer">
                                 <span>{tn}</span>
-                                <span className="text-[10px] font-semibold text-violet-500">{cnt} students {isOpen ? '▲' : '▼'}</span>
+                                <span className="text-[10px] font-semibold text-teal-400">{cnt} students {isOpen ? '▲' : '▼'}</span>
                               </button>
                               {isOpen && (
-                                <div className="bg-white border border-violet-100 rounded-xl p-2 max-h-44 overflow-y-auto custom-scrollbar space-y-1 shadow-sm min-w-[180px]">
+                                <div className="bg-white border border-teal-100 rounded-xl p-2 max-h-44 overflow-y-auto custom-scrollbar space-y-1 shadow-sm min-w-[180px]">
                                   {examStudents.length === 0 ? (
                                     <p className="text-[10px] font-bold text-slate-400 uppercase px-1">No marks yet</p>
                                   ) : examStudents.map(s => {
@@ -5385,7 +5492,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     return (
                                       <div key={s.id} className="flex items-center justify-between gap-2 text-[10px] font-bold text-slate-600 px-1">
                                         <span className="truncate">{s.name} <span className="text-slate-300 font-semibold">· Roll #{s.rollNumber || '000'}</span></span>
-                                        <span className="text-indigo-600 font-black shrink-0">{tot}/{mx}</span>
+                                        <span className="text-teal-600 font-black shrink-0">{tot}/{mx}</span>
                                       </div>
                                     );
                                   })}
@@ -5403,9 +5510,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <div className="bg-white p-5 border border-slate-200 shadow-sm flex items-center justify-between rounded-2xl">
                     <div>
                       <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Students with Marks</p>
-                      <h3 className="text-3xl font-black text-violet-600">{resultsRows.filter(r => r.hasMarks).length}</h3>
+                      <h3 className="text-3xl font-black text-teal-600">{resultsRows.filter(r => r.hasMarks).length}</h3>
                     </div>
-                    <div className="w-12 h-12 rounded-full bg-violet-50 flex items-center justify-center text-violet-600">
+                    <div className="w-12 h-12 rounded-full bg-teal-50 flex items-center justify-center text-teal-600">
                       <Award size={24} />
                     </div>
                   </div>
@@ -5421,14 +5528,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <div className="bg-white p-5 border border-slate-200 shadow-sm flex items-center justify-between rounded-2xl">
                     <div>
                       <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Average %</p>
-                      <h3 className="text-3xl font-black text-emerald-600">
+                      <h3 className="text-3xl font-black text-amber-600">
                         {(() => {
                           const withMarks = resultsRows.filter(r => r.hasMarks && r.totalMax > 0);
                           return withMarks.length > 0 ? Math.round(withMarks.reduce((s, r) => s + r.pct, 0) / withMarks.length) : 0;
                         })()}%
                       </h3>
                     </div>
-                    <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center text-emerald-600">
+                    <div className="w-12 h-12 rounded-full bg-amber-50 flex items-center justify-center text-amber-600">
                       <TrendingUp size={24} />
                     </div>
                   </div>
@@ -5438,9 +5545,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="bg-white border border-slate-200 shadow-sm overflow-hidden rounded-2xl">
                   <div className="p-3.5 sm:p-5 border-b border-slate-100 bg-slate-50/50 flex flex-wrap items-center justify-between gap-3">
                     <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 flex items-center gap-2">
-                      <Award size={16} className="text-violet-600 shrink-0" /> {resultsExam ? `Result Reports — ${resultsExam}` : 'Result Reports'}
+                      <Award size={16} className="text-teal-600 shrink-0" /> {resultsExam ? `Result Reports — ${resultsExam}` : 'Result Reports'}
                       {resultsExam && (
-                        <span className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded-lg font-black tabular-nums">
+                        <span className="px-2 py-0.5 bg-teal-100 text-teal-700 rounded-lg font-black tabular-nums">
                           {resultsRows.filter(r => r.hasMarks).length} with marks
                         </span>
                       )}
@@ -5449,7 +5556,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       {resultsExam && resultsRows.some(r => r.hasMarks) && (
                         <button
                           onClick={() => setResultWAModal({ isOpen: true, exam: resultsExam })}
-                          className="px-4 py-2 bg-emerald-600 text-white text-[11px] font-extrabold uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-emerald-700 transition-all shadow-xs rounded-xl cursor-pointer"
+                          className="px-4 py-2 bg-amber-600 text-white text-[11px] font-extrabold uppercase tracking-wider flex items-center justify-center gap-1.5 hover:bg-amber-700 transition-all shadow-xs rounded-xl cursor-pointer"
                         >
                           <MessageSquare size={13} /> Bulk Send to Parents
                         </button>
@@ -5477,7 +5584,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             <div key={row.student.id} className="p-4 bg-white">
                               <div className="flex items-center justify-between gap-2 mb-2">
                                 <div className="flex items-center gap-3 min-w-0">
-                                  <span className="text-xs font-black text-violet-500 w-6 shrink-0">#{idx + 1}</span>
+                                  <span className="text-xs font-black text-teal-400 w-6 shrink-0">#{idx + 1}</span>
                                   <div className="min-w-0">
                                     <h4 className="font-black text-slate-900 uppercase tracking-tight text-xs truncate">{row.student.name}</h4>
                                     <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mt-0.5">
@@ -5486,7 +5593,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   </div>
                                 </div>
                                 <div className="text-right shrink-0">
-                                  <span className={`block text-sm font-black ${row.hasMarks ? (row.pct >= 40 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-300'}`}>
+                                  <span className={`block text-sm font-black ${row.hasMarks ? (row.pct >= 40 ? 'text-amber-600' : 'text-rose-600') : 'text-slate-300'}`}>
                                     {row.hasMarks ? `${row.pct}%` : '—'}
                                   </span>
                                   <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">
@@ -5511,7 +5618,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <button
                                   onClick={() => handleSendResultWhatsApp(row.student, resultsExam)}
                                   disabled={!row.hasMarks}
-                                  className="px-3.5 py-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer"
+                                  className="px-3.5 py-2 bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer"
                                 >
                                   <Send size={13} /> Send Report
                                 </button>
@@ -5546,7 +5653,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <tr key={row.student.id} className="hover:bg-slate-50/60 transition-colors">
                                   <td className="px-5 py-4">
                                     <div className="flex items-center gap-3">
-                                      <span className="text-xs font-black text-violet-500 w-5 shrink-0">{idx + 1}</span>
+                                      <span className="text-xs font-black text-teal-400 w-5 shrink-0">{idx + 1}</span>
                                       <div>
                                         <span className="font-black text-slate-900 block truncate uppercase tracking-tight text-sm leading-tight">
                                           {row.student.name}
@@ -5561,7 +5668,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     {row.hasMarks ? (
                                       <div className="flex flex-wrap gap-1.5 max-w-md">
                                         {row.examMarks.map(m => (
-                                          <span key={m.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-800 border border-indigo-100 rounded-full text-[10px] font-black uppercase">
+                                          <span key={m.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-teal-50 text-teal-800 border border-teal-100 rounded-full text-[10px] font-black uppercase">
                                             {m.subject}: <span className="tabular-nums">{m.marksObtained}/{m.maxMarks}</span>
                                           </span>
                                         ))}
@@ -5573,13 +5680,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   <td className="px-5 py-4 text-center text-sm font-black text-slate-800 tabular-nums">
                                     {row.hasMarks ? `${row.totalObtained}/${row.totalMax}` : '—'}
                                   </td>
-                                  <td className="px-5 py-4 text-center text-sm font-black text-indigo-600 tabular-nums">
+                                  <td className="px-5 py-4 text-center text-sm font-black text-teal-600 tabular-nums">
                                     {row.hasMarks ? `${row.pct}%` : '—'}
                                   </td>
                                   <td className="px-5 py-4 text-center">
                                     {row.hasMarks ? (
                                       <span className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-full ${
-                                        row.pct >= 40 ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
+                                        row.pct >= 40 ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
                                       }`}>
                                         {row.pct >= 40 ? 'PASS' : 'RE-STUDY'}
                                       </span>
@@ -5592,7 +5699,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                       onClick={() => handleSendResultWhatsApp(row.student, resultsExam)}
                                       disabled={!row.hasMarks}
                                       title={row.hasMarks ? `Send ${resultsExam} report to parent` : 'No marks to send'}
-                                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
                                     >
                                       <Send size={12} /> Send
                                     </button>
@@ -5624,9 +5731,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <p className="text-xs sm:text-xs font-black text-slate-400 uppercase tracking-tight sm:tracking-widest truncate">Total Students</p>
                     <p className="text-xs sm:text-xl font-black text-slate-900">{stats.totalStudents}</p>
                   </div>
-                  <div className="bg-emerald-50 p-2 sm:p-4 rounded-2xl border border-emerald-100 shadow-sm">
-                    <p className="text-xs sm:text-xs font-black text-emerald-600 uppercase tracking-tight sm:tracking-widest truncate">Collected</p>
-                    <p className="text-xs sm:text-xl font-black text-emerald-700">{stats.totalCollected.toLocaleString()}</p>
+                  <div className="bg-amber-50 p-2 sm:p-4 rounded-2xl border border-amber-100 shadow-sm">
+                    <p className="text-xs sm:text-xs font-black text-amber-600 uppercase tracking-tight sm:tracking-widest truncate">Collected</p>
+                    <p className="text-xs sm:text-xl font-black text-amber-700">{stats.totalCollected.toLocaleString()}</p>
                   </div>
                   <button onClick={() => openFeePaymentCenter()} className="bg-rose-50 p-2 sm:p-4 rounded-2xl border border-rose-100 hover:border-rose-400 hover:shadow-md transition-all cursor-pointer text-left" title="Click karein — Fee Payment Center khulega">
                     <p className="text-xs sm:text-xs font-black text-rose-600 uppercase tracking-tight sm:tracking-widest truncate">Pending</p>
@@ -5724,12 +5831,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             <td className="px-4 py-3 text-slate-400">{formatDateDDMMYY(d.date)}</td>
                             <td className="px-4 py-3 text-right">
                               <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                                d.pending > 0 ? (d.amount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700') : 'bg-emerald-100 text-emerald-700'
+                                d.pending > 0 ? (d.amount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700') : 'bg-amber-100 text-amber-700'
                               }`}>
                                 {d.status}
                               </span>
                             </td>
-                            <td className="px-4 py-3 text-emerald-600 text-right">{d.amount.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-amber-600 text-right">{d.amount.toLocaleString()}</td>
                             <td className="px-4 py-3 text-rose-600 text-right">{d.pending > 0 ? d.pending.toLocaleString() : '—'}</td>
                           </tr>
                         ))}
@@ -5744,7 +5851,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             <div className="bg-white p-4 sm:p-6 rounded-3xl border border-slate-200 shadow-sm">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <h1 className="text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
-                  <CreditCard size={24} className="text-indigo-600" />
+                  <CreditCard size={24} className="text-teal-600" />
                   Fee Portal (2026)
                 </h1>
                 <button 
@@ -5761,14 +5868,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <input 
                     type="text" 
                     placeholder="Search student by name or ID..." 
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none"
                     value={feeSearch}
                     onChange={(e) => setFeeSearch(e.target.value)}
                   />
                 </div>
                 <div className="flex flex-col sm:flex-row gap-3">
                   <select
-                    className="w-full sm:w-auto px-4 py-2.5 bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full sm:w-auto px-4 py-2.5 bg-slate-50 border border-slate-200 text-slate-700 font-bold text-xs rounded-xl outline-none focus:ring-2 focus:ring-teal-500"
                     value={feeClassFilter}
                     onChange={(e) => setFeeClassFilter(e.target.value)}
                   >
@@ -5778,7 +5885,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     ))}
                   </select>
                   <select
-                    className="w-full flex-1 px-4 py-2.5 bg-indigo-600 text-white font-black text-xs uppercase tracking-widest rounded-xl cursor-pointer hover:bg-indigo-700 transition-colors"
+                    className="w-full flex-1 px-4 py-2.5 bg-teal-600 text-white font-black text-xs uppercase tracking-widest rounded-xl cursor-pointer hover:bg-teal-700 transition-colors"
                     value={selectedStudentForFee}
                     onChange={(e) => setSelectedStudentForFee(e.target.value)}
                   >
@@ -5831,12 +5938,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <td className="px-6 py-4 text-slate-900 font-black">{st.name}</td>
                                 <td className="px-6 py-4 text-slate-500">{st.class}</td>
                                 <td className="px-6 py-4 text-slate-700">{st.monthlyFee}</td>
-                                <td className="px-6 py-4 text-emerald-600 font-black">{totalPaid}</td>
+                                <td className="px-6 py-4 text-amber-600 font-black">{totalPaid}</td>
                                 <td className="px-6 py-4 text-rose-600 font-black">{pending}</td>
                                 <td className="px-6 py-4 text-right">
                                   <button
                                     onClick={() => setSelectedStudentForFee(String(st.id))}
-                                    className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-black uppercase tracking-widest rounded-lg hover:bg-indigo-700 transition-all shadow-xs"
+                                    className="px-3 py-1.5 bg-teal-600 text-white text-xs font-black uppercase tracking-widest rounded-lg hover:bg-teal-700 transition-all shadow-xs"
                                   >
                                     Manage Account
                                   </button>
@@ -5859,7 +5966,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {/* Selected Student Identity Header Card */}
                   <div className="lg:col-span-12">
                     <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-center gap-6">
-                      <div className="w-24 h-24 rounded-3xl bg-slate-100 border-4 border-indigo-50 overflow-hidden shadow-inner flex items-center justify-center shrink-0">
+                      <div className="w-24 h-24 rounded-3xl bg-slate-100 border-4 border-teal-50 overflow-hidden shadow-inner flex items-center justify-center shrink-0">
                         {studentProfile?.photo ? (
                           <img src={studentProfile.photo} alt={student.name} className="w-full h-full object-cover" />
                         ) : (
@@ -5869,15 +5976,15 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <div className="flex-1 text-center sm:text-left space-y-1">
                         <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
                           <h2 className="text-2xl font-black text-slate-900 tracking-tight">{student.name.split(' ').slice(0, 1).join(' ') || student.name}</h2>
-                          <span className="bg-indigo-100 text-indigo-700 text-xs font-black px-2 py-1 rounded-lg uppercase tracking-widest">Roll: {studentProfile?.rollNumber || 'N/A'}</span>
+                          <span className="bg-teal-100 text-teal-700 text-xs font-black px-2 py-1 rounded-lg uppercase tracking-widest">Roll: {studentProfile?.rollNumber || 'N/A'}</span>
                         </div>
                         <p className="text-sm font-bold text-slate-400 uppercase tracking-widest flex items-center justify-center sm:justify-start gap-2">
                           <Users size={14} /> {student.class}
                         </p>
                         <div className="flex items-center justify-center sm:justify-start gap-3 pt-2">
-                           <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 rounded-full border border-emerald-100">
-                             <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                             <span className="text-xs font-black text-emerald-700 uppercase">Active Profile</span>
+                           <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 rounded-full border border-amber-100">
+                             <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></div>
+                             <span className="text-xs font-black text-amber-700 uppercase">Active Profile</span>
                            </div>
                         </div>
                       </div>
@@ -5890,14 +5997,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="grid grid-cols-1 gap-4">
                       <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
                         <h3 className="text-xs font-black uppercase text-slate-400 tracking-widest border-b pb-2 flex items-center gap-2">
-                          <BookOpen size={14} className="text-blue-500" /> Fund Entry Cards
+                          <BookOpen size={14} className="text-teal-500" /> Fund Entry Cards
                         </h3>
                         
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           {[
-                            { label: 'Paper Fund', desc: 'Paper Fund', icon: BookOpen, color: 'text-blue-600', bg: 'bg-blue-50' },
+                            { label: 'Paper Fund', desc: 'Paper Fund', icon: BookOpen, color: 'text-teal-600', bg: 'bg-teal-50' },
                             { label: 'Summer Pack', desc: 'Summer Pack', icon: Sun, color: 'text-orange-600', bg: 'bg-orange-50' },
-                            { label: 'Other Fund', desc: 'Miscellaneous', icon: PlusCircle, color: 'text-indigo-600', bg: 'bg-indigo-50' }
+                            { label: 'Other Fund', desc: 'Miscellaneous', icon: PlusCircle, color: 'text-teal-600', bg: 'bg-teal-50' }
                           ].map((fund, idx) => (
                             <div key={idx} className={`${fund.bg} p-4 rounded-2xl border border-slate-100 flex flex-col gap-3`}>
                               <div className="flex items-center gap-2">
@@ -5909,7 +6016,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   id={`fundAmt_${idx}`} 
                                   type="number" 
                                   placeholder="Amount" 
-                                  className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-xs font-black outline-none focus:border-indigo-500"
+                                  className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-xs font-black outline-none focus:border-teal-500"
                                 />
                                 <button 
                                   onClick={() => {
@@ -5935,7 +6042,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       {/* Manual Reminder Card */}
                       <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
                         <h3 className="text-xs font-black uppercase text-slate-400 tracking-widest border-b pb-2 flex items-center gap-2">
-                          <Send size={14} className="text-emerald-500" /> Dispatch Alerts
+                          <Send size={14} className="text-amber-500" /> Dispatch Alerts
                         </h3>
                         <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
                           <p className="text-xs text-slate-500 font-black uppercase tracking-widest leading-none mb-1">Total Pending</p>
@@ -5944,7 +6051,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <button 
                           onClick={() => handleSendFeeNotification(student, 'reminder', 0, '')}
                           title="Send WhatsApp Reminder"
-                          className="w-full py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-widest flex items-center justify-center hover:bg-emerald-700 transition-all shadow-md active:scale-95 cursor-pointer"
+                          className="w-full py-2.5 bg-amber-600 text-white rounded-xl text-xs font-black uppercase tracking-widest flex items-center justify-center hover:bg-amber-700 transition-all shadow-md active:scale-95 cursor-pointer"
                         >
                           <Send size={18} />
                         </button>
@@ -5963,7 +6070,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       </div>
                       <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex flex-col justify-center">
                         <span className="text-xs font-black uppercase text-slate-400 tracking-widest mb-1">Total Yearly Paid</span>
-                        <span className="text-xl font-black text-emerald-600">{account.totalPaid}</span>
+                        <span className="text-xl font-black text-amber-600">{account.totalPaid}</span>
                       </div>
                       <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm flex flex-col justify-center">
                         <span className="text-xs font-black uppercase text-slate-400 tracking-widest mb-1">Other Funds</span>
@@ -5980,7 +6087,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                         <h3 className="text-xs font-black uppercase tracking-widest text-slate-900">Yearly Ledger (Jan-Dec 2026)</h3>
                         <div className="flex gap-4 text-xs font-black uppercase">
-                          <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div> Paid</span>
+                          <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-amber-500"></div> Paid</span>
                           <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-rose-500"></div> Pending</span>
                         </div>
                       </div>
@@ -6008,7 +6115,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 feeType: 'School Fee'
                               });
                             }}
-                            className="bg-white p-2 sm:p-3 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 group cursor-pointer transition-all active:scale-95 flex flex-col justify-between"
+                            className="bg-white p-2 sm:p-3 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-teal-300 group cursor-pointer transition-all active:scale-95 flex flex-col justify-between"
                             title={`Click to record payment for ${m.month}`}
                           >
                             <div className="flex justify-between items-start mb-2">
@@ -6016,15 +6123,15 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               {m.isFutureMonth ? (
                                 <span className="text-xs font-black uppercase text-slate-300">Upcoming</span>
                               ) : m.isComplete ? (
-                                <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
+                                <CheckCircle2 size={14} className="text-amber-500 shrink-0" />
                               ) : (
-                                <AlertCircle size={14} className="text-rose-500 animate-pulse group-hover:text-indigo-600 shrink-0" />
+                                <AlertCircle size={14} className="text-rose-500 animate-pulse group-hover:text-teal-600 shrink-0" />
                               )}
                             </div>
                             <div className="space-y-1 mb-2">
                               <div className="flex flex-col text-xs sm:text-xs font-bold">
                                 <span className="text-slate-400">Paid:</span>
-                                <span className={m.paid > 0 ? "text-emerald-600" : "text-slate-300"}>{m.paid}</span>
+                                <span className={m.paid > 0 ? "text-amber-600" : "text-slate-300"}>{m.paid}</span>
                               </div>
                               <div className="flex flex-col text-xs sm:text-xs font-black">
                                 <span className="text-slate-400 uppercase">Pend:</span>
@@ -6032,7 +6139,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               </div>
                             </div>
                             <div className="mt-auto w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                                <div className={`h-full transition-all duration-500 ${m.isFutureMonth ? 'bg-slate-200' : m.isComplete ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${m.isFutureMonth ? 100 : (m.paid / Math.max(1, m.due)) * 100}%` }}></div>
+                                <div className={`h-full transition-all duration-500 ${m.isFutureMonth ? 'bg-slate-200' : m.isComplete ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${m.isFutureMonth ? 100 : (m.paid / Math.max(1, m.due)) * 100}%` }}></div>
                             </div>
                           </div>
                         ))}
@@ -6050,7 +6157,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-xs font-bold text-slate-500">Total Yearly Paid:</span>
-                            <span className="text-sm font-black text-emerald-600">{account.totalPaid.toLocaleString()}</span>
+                            <span className="text-sm font-black text-amber-600">{account.totalPaid.toLocaleString()}</span>
                           </div>
                           <div className="flex justify-between items-center pb-2">
                             <span className="text-xs font-bold text-slate-500">Other Funds (Fine/Dues):</span>
@@ -6080,7 +6187,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <div className="flex items-center gap-1 transition-opacity">
                                   <button 
                                     onClick={() => setFeeEditModal({ isOpen: true, type: 'other', recordId: f.id, studentId: String(student.id), amount: String(f.amount), desc: f.desc, feeType: '' })}
-                                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                    className="p-1.5 text-slate-400 hover:text-teal-600 hover:bg-teal-50 rounded-lg transition-all"
                                   >
                                     <Edit2 size={12} />
                                   </button>
@@ -6131,7 +6238,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               setShowBulkDueModal(true);
                             }}
                             title="Apply a due (Paper Fund/Annual Fee etc.) to EVERY student in a class at once"
-                            className="px-3 py-2 bg-indigo-600 text-white text-xs font-black uppercase tracking-widest rounded-lg hover:bg-indigo-700 transition-all shadow-sm flex items-center gap-1.5"
+                            className="px-3 py-2 bg-teal-600 text-white text-xs font-black uppercase tracking-widest rounded-lg hover:bg-teal-700 transition-all shadow-sm flex items-center gap-1.5"
                           >
                             <Users size={12} /> Apply to Class
                           </button>
@@ -6258,7 +6365,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <span className="text-xs font-black text-slate-900 uppercase">{d.desc}</span>
                                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-black uppercase tracking-widest ${
-                                      d.status === 'paid' ? 'bg-emerald-100 text-emerald-600' :
+                                      d.status === 'paid' ? 'bg-amber-100 text-amber-600' :
                                       d.status === 'waived' ? 'bg-amber-100 text-amber-600' :
                                       'bg-rose-100 text-rose-600'
                                     }`}>
@@ -6274,7 +6381,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   <div className="text-right">
                                     {getDuePaid(d) > 0 ? (
                                       <>
-                                        <div className="text-xs font-black text-emerald-600">{getDuePaid(d).toLocaleString()} paid</div>
+                                        <div className="text-xs font-black text-amber-600">{getDuePaid(d).toLocaleString()} paid</div>
                                         {getDueRemaining(d) > 0 && (
                                           <div className="text-[10px] font-black text-rose-600">{getDueRemaining(d).toLocaleString()} pending</div>
                                         )}
@@ -6292,7 +6399,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                           setCollectDuesAmount(String(dRemaining));
                                           setCollectDuesPaymentMethod('Cash');
                                         }}
-                                        className="p-1.5 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-all"
+                                        className="p-1.5 text-amber-600 hover:bg-amber-100 rounded-lg transition-all"
                                         title="Collect Due"
                                       >
                                         <CheckCircle2 size={12} />
@@ -6300,7 +6407,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     )}
                                     <button
                                       onClick={() => setFeeEditModal({ isOpen: true, type: 'other', recordId: d.id, studentId: String(student.id), amount: String(d.amount), desc: d.desc, feeType: 'Due' })}
-                                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                      className="p-1.5 text-slate-400 hover:text-teal-600 hover:bg-teal-50 rounded-lg transition-all"
                                       title="Edit"
                                     >
                                       <Edit2 size={12} />
@@ -6327,7 +6434,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                       {/* Payment Transactions History (Monthly Fees) */}
                       <div className="md:col-span-2 bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-                        <h3 className="text-xs font-black uppercase text-indigo-600 tracking-widest border-b pb-2 flex justify-between items-center">
+                        <h3 className="text-xs font-black uppercase text-teal-600 tracking-widest border-b pb-2 flex justify-between items-center">
                           Monthly Fee Payment History
                           <span className="text-xs text-slate-400 font-bold ">Latest transactions first</span>
                         </h3>
@@ -6351,16 +6458,16 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <span className="text-xs font-black text-slate-900 uppercase ">{formatDateDDMMYY(p.date) || `${p.month} ${p.year}`}</span>
-                                    <span className="text-[10px] bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded font-black uppercase tracking-widest">{p.feeType || (fees.find(f => f.id === p.id)?.feeType) || 'School Fee'}</span>
+                                    <span className="text-[10px] bg-teal-100 text-teal-600 px-1.5 py-0.5 rounded font-black uppercase tracking-widest">{p.feeType || (fees.find(f => f.id === p.id)?.feeType) || 'School Fee'}</span>
                                   </div>
                                   <p className="text-xs text-slate-400 font-bold mt-0.5">Paid on: {formatDateDDMMYY(p.date) || p.date} · {String(p.month).replace(/ \d{4}$/, '')} {p.year}</p>
                                 </div>
                                 <div className="flex items-center gap-3 shrink-0">
-                                  <span className="text-xs font-black text-emerald-600">{p.amount}</span>
+                                  <span className="text-xs font-black text-amber-600">{p.amount}</span>
                                   <div className="flex items-center gap-1 transition-opacity" onPointerDown={(e) => e.stopPropagation()}>
                                     <button 
                                       onClick={() => setFeeEditModal({ isOpen: true, type: 'payment', recordId: p.id, studentId: String(student.id), amount: String(p.amount), desc: `${p.month} ${p.year}`, feeType: p.feeType || (fees.find(f => f.id === p.id)?.feeType) || 'School Fee' })}
-                                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                      className="p-1.5 text-slate-400 hover:text-teal-600 hover:bg-teal-50 rounded-lg transition-all"
                                     >
                                       <Edit2 size={12} />
                                     </button>
@@ -6394,6 +6501,169 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             })()}
           </div>
         )}
+        {/* ========== TEACHER PAY & GPS ATTENDANCE MANAGER ========== */}
+        {activeTab === 'teacher_pay' && (
+          <div id="panel-principal-teacher-pay" className="space-y-8 animate-fade-in bg-teal-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-teal-100 shadow-inner">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Teacher Pay & Hisab</h1>
+                <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest font-bold">Salary config · GPS attendance linked payslips · Payment status (Digital Registrar)</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black uppercase tracking-widest text-slate-500">Month:</span>
+                <input
+                  type="month"
+                  value={payMonthSelP}
+                  onChange={(e) => setPayMonthSelP(e.target.value)}
+                  className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800"
+                />
+              </div>
+            </div>
+
+            {/* School location card */}
+            <div className="bg-white rounded-xl p-5 border-2 border-teal-200 shadow-md flex flex-col md:flex-row md:items-end justify-between gap-4">
+              <div className="flex-1 space-y-2.5">
+                <div className="flex items-center gap-2 text-base font-black text-slate-800 uppercase tracking-tight">
+                  <MapPin size={18} className="text-teal-600" /> School GPS Location (Attendance Radius)
+                </div>
+                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                  Teacher check-in sirf is location ke radius ke ANDAR hota hai. Coordinates Google Maps se copy karein.
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="space-y-1">
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Latitude</label>
+                    <input value={locLat} onChange={(e) => setLocLat(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono text-slate-800" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Longitude</label>
+                    <input value={locLng} onChange={(e) => setLocLng(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono text-slate-800" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Radius (m)</label>
+                    <input type="number" min={100} value={locRadius} onChange={(e) => setLocRadius(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono text-slate-800" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Location Name</label>
+                    <input value={locName} onChange={(e) => setLocName(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800" />
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={saveSchoolLocation}
+                className="shrink-0 px-6 py-3 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg transition-all flex items-center gap-2 cursor-pointer"
+              >
+                <Navigation size={15} /> {showLocSaved ? 'Saved ✓' : 'Save Location'}
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {teachers.map((t) => {
+                const cfg = teacherPayConfigs.find(c => String(c.teacherId) === String(t.id)) || defaultPayConfig(t.id);
+                const slip = teacherPayslipsMap[t.id];
+                const key = `${t.id}_${payYearP}_${payMonthIdxP}`;
+                const paid = teacherPaySlips[key]?.paid === true;
+                return (
+                  <div key={t.id} className="bg-white border-2 border-slate-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all flex flex-col">
+                    <div className={`px-4 py-3 flex items-center gap-3 ${paid ? 'bg-teal-600' : 'bg-slate-900'}`}>
+                      <div className="w-10 h-10 rounded-full bg-white/15 flex items-center justify-center text-white font-black shrink-0"><User size={16} /></div>
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-black text-white uppercase tracking-tight truncate">{t.name}</h3>
+                        <p className="text-[10px] text-white/80 font-bold uppercase tracking-widest truncate">{t.subject}</p>
+                      </div>
+                      <span className={`ml-auto px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${paid ? 'bg-white text-teal-900' : 'bg-amber-400 text-slate-950'}`}>{paid ? 'PAID' : 'PENDING'}</span>
+                    </div>
+                    <div className="px-4 py-3 space-y-1.5">
+                      <div className="flex justify-between"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Base Salary</span><span className="text-[11px] font-black text-slate-900">{formatPKR(cfg.baseSalary)}</span></div>
+                      <div className="flex justify-between"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Monthly Allowance</span><span className="text-[11px] font-black text-teal-600">+ {formatPKR(cfg.allowances)}</span></div>
+                      <div className="flex justify-between"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Present Bonus/day</span><span className="text-[11px] font-black text-teal-600">+ {formatPKR(cfg.bonusPerPresentDay)}</span></div>
+                      <div className="flex justify-between"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Late Docking/day</span><span className="text-[11px] font-black text-rose-600">- {formatPKR(cfg.lateDeductionPerDay)}</span></div>
+                      <div className="flex justify-between"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Absent Docking/day</span><span className="text-[11px] font-black text-rose-600">- {formatPKR(cfg.absentDeductionPerDay)}</span></div>
+                      <div className="flex justify-between"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Fixed Deductions</span><span className="text-[11px] font-black text-rose-600">- {formatPKR(cfg.deductions)}</span></div>
+                    </div>
+                    <div className="border-t border-slate-100 px-4 py-3 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase bg-teal-50 text-teal-700 border border-teal-200">Present {slip.presentDays}</span>
+                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase bg-amber-50 text-amber-700 border border-amber-200">Late {slip.lateDays}</span>
+                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase bg-rose-50 text-rose-700 border border-rose-200">Absent {slip.absentDays}</span>
+                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase bg-slate-50 text-slate-600 border border-slate-200">Leave {slip.leaveDays}</span>
+                      </div>
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Net Pay · {monthLabel(slip.year, slip.month)}</span>
+                        <span className="text-base font-black text-teal-700 tabular-nums">{formatPKR(slip.netPay)}</span>
+                      </div>
+                    </div>
+                    <div className="px-4 py-2.5 flex gap-2">
+                      <button onClick={() => openPayEditor(t)} className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer">
+                        <Edit2 size={13} /> Config
+                      </button>
+                      <button onClick={() => markTeacherPaid(t.id)} disabled={paid} className="flex-1 py-2 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-400 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed">
+                        <Banknote size={13} /> {paid ? 'Paid ✓' : 'Mark Paid'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <AnimatePresence>
+              {editingPayTeacherId && payForm && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md">
+                  <motion.div
+                    initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                    animate={{ scale: 1, opacity: 1, y: 0 }}
+                    exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                    className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+                  >
+                    <div className="px-6 py-4 bg-teal-600 text-white flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Wallet size={18} />
+                        <h3 className="text-sm font-black uppercase tracking-tight">Pay Config — {teachers.find(t => String(t.id) === String(editingPayTeacherId))?.name || '-'}</h3>
+                      </div>
+                      <button onClick={() => { setEditingPayTeacherId(null); setPayForm(null); }} className="p-1.5 rounded-full text-white/80 hover:text-white transition-colors"><X size={18} /></button>
+                    </div>
+                    <div className="p-6 space-y-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Base Salary</label>
+                          <input type="number" value={payForm.baseSalary} onChange={(e) => setPayForm({ ...payForm, baseSalary: Number(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-800" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Present Bonus / Day</label>
+                          <input type="number" value={payForm.bonusPerPresentDay} onChange={(e) => setPayForm({ ...payForm, bonusPerPresentDay: Number(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-800" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Late Docking / Day</label>
+                          <input type="number" value={payForm.lateDeductionPerDay} onChange={(e) => setPayForm({ ...payForm, lateDeductionPerDay: Number(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-800" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Absent Docking / Day</label>
+                          <input type="number" value={payForm.absentDeductionPerDay} onChange={(e) => setPayForm({ ...payForm, absentDeductionPerDay: Number(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-800" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Monthly Allowance</label>
+                          <input type="number" value={payForm.allowances} onChange={(e) => setPayForm({ ...payForm, allowances: Number(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-800" />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">Fixed Deductions</label>
+                          <input type="number" value={payForm.deductions} onChange={(e) => setPayForm({ ...payForm, deductions: Number(e.target.value) || 0 })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-800" />
+                        </div>
+                      </div>
+                      <p className="text-[10px] bg-amber-50 border border-amber-100 text-amber-800 font-bold leading-relaxed">
+                        Net Pay = Base + (Present × Bonus) + Allowances − (Late × Docking) − (Absent × Docking) − Fixed.
+                        Attendance data teacher ke GPS check-in se aata hai.
+                      </p>
+                    </div>
+                    <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-4">
+                      <button onClick={() => { setEditingPayTeacherId(null); setPayForm(null); }} className="px-5 py-2 border border-slate-200 text-slate-600 text-xs font-black uppercase tracking-widest hover:bg-white transition-all rounded-lg">Cancel</button>
+                      <button onClick={() => savePayConfig(payForm)} className="px-7 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-black uppercase tracking-[0.15em] flex items-center gap-2 rounded-lg transition-all shadow-md">
+                        <Save size={14} /> Save Config
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+        {/* end teacher_pay panel */}
         {/* ========== SETTINGS & CONFIGURATION PORTAL ========== */}
         {activeTab === 'settings' && (
           <div id="panel-principal-settings" className="space-y-8 animate-fade-in font-sans bg-slate-50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 shadow-inner">
@@ -6401,14 +6671,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             {/* ========== MANUAL CLOUD DATA SYNC ========== */}
             <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-6 my-6">
               <div className="flex items-center gap-4">
-                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-600">
+                <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-amber-600">
                   <Database size={22} className="animate-pulse" />
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
                     Cloud Ledger Sync
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      CONNECTED
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold border ${isDemoMode() ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-teal-50 text-teal-700 border-teal-200'}`}>
+                      {isDemoMode() ? 'DEMO MODE — LOCAL STORAGE' : 'CONNECTED'}
                     </span>
                   </h3>
                 </div>
@@ -6452,7 +6722,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       toast.error("Error downloading data: " + error.message);
                     }
                   }}
-                  className="bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-sky-600 border border-slate-200 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm"
+                  className="bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-teal-600 border border-slate-200 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm"
                 >
                   <DownloadCloud size={14} />
                   Download
@@ -6461,7 +6731,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   type="button"
                   onClick={handleUploadToCloud}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-emerald-500/10"
+                  className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-amber-500/10"
                 >
                   <UploadCloud size={14} />
                   Upload from Localhost
@@ -6478,7 +6748,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       toast.error("Sync failed: " + err.message);
                     }
                   }}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-blue-500/10"
+                  className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-teal-500/10"
                 >
                   <RefreshCw size={14} />
                   Force Sync to Cloud
@@ -6487,6 +6757,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   type="button"
                   onClick={async () => {
+                    if (isDemoMode()) {
+                      toast.info('Demo Mode active — app local storage par chalti hai. Cloud connection live mode (VITE_DATA_MODE hata kar) test hoga.');
+                      return;
+                    }
                     toast.info("Testing Supabase connection...");
                     try {
                       const connected = await testSupabaseConnection();
@@ -6499,7 +6773,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       toast.error("Connection test failed: " + err.message);
                     }
                   }}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-indigo-500/10"
+                  className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-teal-500/10"
                 >
                   <Wifi size={14} />
                   Test Connection
@@ -6547,7 +6821,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             {/* ========== LOCAL DEVICE BACKUP ========== */}
             <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-6 my-6">
               <div className="flex items-center gap-4">
-                <div className="p-3 bg-blue-50 rounded-xl border border-blue-100 text-blue-600">
+                <div className="p-3 bg-teal-50 rounded-xl border border-teal-100 text-teal-600">
                   <HardDrive size={22} />
                 </div>
                 <div>
@@ -6562,7 +6836,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   type="button"
                   onClick={handleDownloadJSON}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-blue-500/10"
+                  className="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm shadow-teal-500/10"
                 >
                   <Download size={14} />
                   Download Backup
@@ -6590,10 +6864,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             {/* ========== PRINCIPAL PROFILE & OFFLINE BACKUP GRID ========== */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               {/* Profile/Security Section */}
-              <div className="bg-white rounded-none p-8 border border-slate-200 shadow-sm border-t-4 border-t-indigo-600">
+              <div className="bg-white rounded-none p-8 border border-slate-200 shadow-sm border-t-4 border-t-teal-600">
                 <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-indigo-50 rounded-none border border-indigo-100">
-                    <Sparkles size={24} className="text-indigo-600" />
+                  <div className="p-2 bg-teal-50 rounded-none border border-teal-100">
+                    <Sparkles size={24} className="text-teal-600" />
                   </div>
                   <div>
                     <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">Security & Profile</h2>
@@ -6635,19 +6909,19 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 >
                   <div className="space-y-1">
                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest">New Administrative ID</label>
-                    <input name="username" type="text" placeholder="Enter new username/ID..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-indigo-500" />
+                    <input name="username" type="text" placeholder="Enter new username/ID..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-teal-500" />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <label className="text-xs font-black text-slate-400 uppercase tracking-widest">New Password</label>
-                      <input name="password" type="password" placeholder="••••••••" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-indigo-500" />
+                      <input name="password" type="password" placeholder="••••••••" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-teal-500" />
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-black text-slate-400 uppercase tracking-widest">Confirm Password</label>
-                      <input name="confirm_password" type="password" placeholder="••••••••" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-indigo-500" />
+                      <input name="confirm_password" type="password" placeholder="••••••••" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-teal-500" />
                     </div>
                   </div>
-                  <button type="submit" className="w-full py-3 bg-indigo-600 text-white font-black uppercase tracking-widest text-xs hover:bg-slate-900 transition-all rounded-lg mt-2 shadow-md">
+                  <button type="submit" className="w-full py-3 bg-teal-600 text-white font-black uppercase tracking-widest text-xs hover:bg-slate-900 transition-all rounded-lg mt-2 shadow-md">
                     Update System Credentials
                   </button>
                 </form>
@@ -6712,7 +6986,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="space-y-6">
                   <div className="space-y-2">
                     <h3 className="text-sm font-black uppercase text-slate-800 flex items-center gap-2">
-                      <CreditCard size={18} className="text-indigo-600" />
+                      <CreditCard size={18} className="text-teal-600" />
                       Fee Collection Protocols (Collection Policy)
                     </h3>
                   </div>
@@ -6752,7 +7026,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="space-y-6">
                   <div className="space-y-2">
                     <h3 className="text-sm font-black uppercase text-slate-800 flex items-center gap-2">
-                      <Users size={18} className="text-emerald-600" />
+                      <Users size={18} className="text-amber-600" />
                       Access Control & Portal Security
                     </h3>
                     <p className="text-xs text-slate-500 leading-relaxed">
@@ -6766,7 +7040,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <p className="text-xs font-black uppercase text-slate-800">Auto-Generate Credentials</p>
                         <p className="text-xs text-slate-400">Automatically creates IDs for new students/teachers.</p>
                       </div>
-                      <div className="w-10 h-5 bg-emerald-500 rounded-full flex items-center px-1">
+                      <div className="w-10 h-5 bg-amber-500 rounded-full flex items-center px-1">
                         <div className="w-3 h-3 bg-white rounded-full ml-auto"></div>
                       </div>
                     </div>
@@ -6776,7 +7050,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <p className="text-xs font-black uppercase text-slate-800">Allow Password Resets</p>
                         <p className="text-xs text-slate-400">Enables users to change passwords from their dashboards.</p>
                       </div>
-                      <div className="w-10 h-5 bg-emerald-500 rounded-full flex items-center px-1">
+                      <div className="w-10 h-5 bg-amber-500 rounded-full flex items-center px-1">
                         <div className="w-3 h-3 bg-white rounded-full ml-auto"></div>
                       </div>
                     </div>
@@ -6786,7 +7060,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <p className="text-xs font-black uppercase text-slate-800">Strict Teacher Isolation</p>
                         <p className="text-xs text-slate-400">Lock teachers to their assigned classroom data only.</p>
                       </div>
-                      <div className="w-10 h-5 bg-emerald-500 rounded-full flex items-center px-1">
+                      <div className="w-10 h-5 bg-amber-500 rounded-full flex items-center px-1">
                         <div className="w-3 h-3 bg-white rounded-full ml-auto"></div>
                       </div>
                     </div>
@@ -6814,16 +7088,16 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <button 
                         type="button"
                         onClick={handleToggleTheme}
-                        className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors ${darkTheme ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                        className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors ${darkTheme ? 'bg-teal-600' : 'bg-slate-300'}`}
                         id="btn-toggle-dark-mode"
                       >
                         <div className={`w-4 h-4 rounded-full bg-white flex items-center justify-center transition-transform ${darkTheme ? 'translate-x-6' : 'translate-x-0'}`}>
-                          {darkTheme ? <Moon size={10} className="text-indigo-600" /> : <Sun size={10} className="text-amber-500" />}
+                          {darkTheme ? <Moon size={10} className="text-teal-600" /> : <Sun size={10} className="text-amber-500" />}
                         </div>
                       </button>
                     </div>
 
-                    <div className="p-3 bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900 text-xs text-indigo-800 dark:text-indigo-200 leading-relaxed rounded-none">
+                    <div className="p-3 bg-teal-50/60 dark:bg-teal-900/40 border border-teal-100 dark:border-teal-900 text-xs text-teal-800 dark:text-teal-200 leading-relaxed rounded-none">
                       <strong>✨ Note:</strong> Theme preference is synchronized in real-time. Changing this updates your portal view immediately and sets your persistent local workspace styling preference.
                     </div>
                   </div>
@@ -6833,16 +7107,16 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="space-y-6 md:col-span-2">
                   <div className="space-y-2">
                     <h3 className="text-sm font-black uppercase text-slate-800 flex items-center gap-2">
-                      <Phone size={18} className="text-emerald-600" />
+                      <Phone size={18} className="text-amber-600" />
                       WhatsApp & Automated Communication (WhatsApp Settings)
                     </h3>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="bg-slate-50 p-5 border border-slate-200 space-y-4">
-                      <div className="flex items-center justify-between p-3 bg-white border border-slate-200 ring-2 ring-emerald-500/20">
+                      <div className="flex items-center justify-between p-3 bg-white border border-slate-200 ring-2 ring-amber-500/20">
                         <div className="space-y-0.5">
-                          <p className="text-xs font-black uppercase text-indigo-600 flex items-center gap-1">
+                          <p className="text-xs font-black uppercase text-teal-600 flex items-center gap-1">
                             <Zap size={10} /> Auto-Redirect WhatsApp
                           </p>
                           <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">Open WA tab automatically</p>
@@ -6851,7 +7125,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           onClick={() => {
                             updateSetting('autoWhatsAppRedirect', !appSettings.autoWhatsAppRedirect);
                           }}
-                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-all duration-300 ${appSettings.autoWhatsAppRedirect ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-all duration-300 ${appSettings.autoWhatsAppRedirect ? 'bg-teal-600' : 'bg-slate-300'}`}
                         >
                           <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${appSettings.autoWhatsAppRedirect ? 'translate-x-5' : 'translate-x-0'}`}></div>
                         </button>
@@ -6864,7 +7138,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         </div>
                         <button 
                           onClick={() => updateSetting('whatsAppAutoFee', !appSettings.whatsAppAutoFee)}
-                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-colors ${appSettings.whatsAppAutoFee ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-colors ${appSettings.whatsAppAutoFee ? 'bg-amber-500' : 'bg-slate-300'}`}
                         >
                           <div className={`w-3 h-3 bg-white rounded-full transition-transform ${appSettings.whatsAppAutoFee ? 'ml-auto' : 'mr-auto'}`}></div>
                         </button>
@@ -6877,7 +7151,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         </div>
                         <button 
                           onClick={() => updateSetting('whatsAppAutoAbsence', !appSettings.whatsAppAutoAbsence)}
-                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-colors ${appSettings.whatsAppAutoAbsence ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-colors ${appSettings.whatsAppAutoAbsence ? 'bg-amber-500' : 'bg-slate-300'}`}
                         >
                           <div className={`w-3 h-3 bg-white rounded-full transition-transform ${appSettings.whatsAppAutoAbsence ? 'ml-auto' : 'mr-auto'}`}></div>
                         </button>
@@ -6890,7 +7164,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         </div>
                         <button 
                           onClick={() => updateSetting('whatsAppAutoResult', !appSettings.whatsAppAutoResult)}
-                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-colors ${appSettings.whatsAppAutoResult ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                          className={`w-10 h-5 rounded-full flex items-center px-1 transition-colors ${appSettings.whatsAppAutoResult ? 'bg-amber-500' : 'bg-slate-300'}`}
                         >
                           <div className={`w-3 h-3 bg-white rounded-full transition-transform ${appSettings.whatsAppAutoResult ? 'ml-auto' : 'mr-auto'}`}></div>
                         </button>
@@ -6898,7 +7172,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     </div>
 
                     <div className="bg-slate-900 text-white p-5 space-y-4 shadow-xl">
-                      <h4 className="text-xs font-black uppercase tracking-widest text-emerald-400">Bulk Execution Logs</h4>
+                      <h4 className="text-xs font-black uppercase tracking-widest text-amber-400">Bulk Execution Logs</h4>
                       <div className="space-y-2 h-40 overflow-y-auto pr-2 custom-scrollbar">
                         {broadcastLogs.length === 0 ? (
                           <p className="text-xs text-slate-500 ">No recent autopilot activity.</p>
@@ -6907,7 +7181,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             <div key={log.id} className="p-2 border-b border-white/10 last:border-0">
                               <div className="flex justify-between items-start gap-2">
                                 <p className="text-xs font-bold text-slate-200">{log.recipient}</p>
-                                <span className="text-xs px-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase">{log.status}</span>
+                                <span className="text-xs px-1 bg-amber-500/20 text-amber-400 border border-amber-500/30 uppercase">{log.status}</span>
                               </div>
                               <p className="text-xs text-slate-400 truncate mt-0.5">{log.text}</p>
                               <p className="text-[10px] text-slate-600 mt-0.5">{log.timestamp}</p>
@@ -6934,7 +7208,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           ]);
                           toast.success(`Pending reminder triggered for ${unpaidCount} students.`);
                         }}
-                        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase py-2 tracking-widest transition-all"
+                        className="w-full bg-amber-600 hover:bg-amber-500 text-white font-black text-xs uppercase py-2 tracking-widest transition-all"
                       >
                         ⚡ Run Batch Fee Reminders
                       </button>
@@ -6947,7 +7221,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               <div className="mt-10 pt-10 border-t border-slate-200 space-y-6">
                 <div className="space-y-2">
                   <h3 className="text-sm font-black uppercase text-slate-800 flex items-center gap-2 font-display">
-                    <MessageSquare size={18} className="text-indigo-600" />
+                    <MessageSquare size={18} className="text-teal-600" />
                     SMS & WhatsApp Message Templates Settings
                   </h3>
                   <p className="text-xs text-slate-500 leading-relaxed">
@@ -6960,7 +7234,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <div className="space-y-3 bg-white p-5 border border-slate-200">
                     <div className="flex justify-between items-center">
                       <span className="text-xs font-black uppercase tracking-widest text-slate-400 block">Absent Alarm Template</span>
-                      <span className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 font-bold px-2 py-0.5 rounded-full uppercase">Absent Alert</span>
+                      <span className="text-xs bg-teal-50 text-teal-700 border border-teal-100 font-bold px-2 py-0.5 rounded-full uppercase">Absent Alert</span>
                     </div>
                     
                     <textarea 
@@ -6968,11 +7242,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={appSettings.absentTemplate}
                       onChange={(e) => updateSetting('absentTemplate', e.target.value)}
                       placeholder="Insert your custom absent template copy..."
-                      className="w-full bg-slate-50 text-xs border border-slate-200 p-3  font-medium focus:outline-none focus:border-indigo-600 focus:bg-white"
+                      className="w-full bg-slate-50 text-xs border border-slate-200 p-3  font-medium focus:outline-none focus:border-teal-600 focus:bg-white"
                     />
                     
                     <div className="space-y-1 bg-slate-50 p-3 text-xs text-slate-500 font-mono">
-                      <p className="font-bold uppercase text-xs text-indigo-700">Available Tags (Auto Replaced):</p>
+                      <p className="font-bold uppercase text-xs text-teal-700">Available Tags (Auto Replaced):</p>
                       <ul className="list-disc list-inside space-y-0.5">
                         <li><code className="text-rose-600 font-bold">{`{student_name}`}</code> - Name of the absentee</li>
                         <li><code className="text-rose-600 font-bold">{`{roll_number}`}</code> - Roll registry number</li>
@@ -6997,7 +7271,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <span className="text-xs font-black uppercase tracking-widest text-slate-400 block">Dues & Fee Reminder Template</span>
                       <div className="flex gap-2">
                         <select 
-                          className="text-xs bg-white border border-slate-200 font-bold px-2 py-0.5 rounded uppercase focus:ring-1 focus:ring-emerald-500 outline-none"
+                          className="text-xs bg-white border border-slate-200 font-bold px-2 py-0.5 rounded uppercase focus:ring-1 focus:ring-amber-500 outline-none"
                           onChange={(e) => {
                             const val = e.target.value;
                             let newTpl = "";
@@ -7016,7 +7290,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           <option value="standard">Standard (Polite)</option>
                           <option value="urgent">Urgent (Warning)</option>
                         </select>
-                        <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-100 font-bold px-2 py-0.5 rounded-full uppercase">Fee Dues</span>
+                        <span className="text-xs bg-amber-50 text-amber-700 border border-amber-100 font-bold px-2 py-0.5 rounded-full uppercase">Fee Dues</span>
                       </div>
                     </div>
                     
@@ -7025,11 +7299,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={appSettings.feeTemplate}
                       onChange={(e) => updateSetting('feeTemplate', e.target.value)}
                       placeholder="Insert your custom outstanding fee template copy..."
-                      className="w-full bg-slate-50 text-xs border border-slate-200 p-3  font-medium focus:outline-none focus:border-emerald-600 focus:bg-white"
+                      className="w-full bg-slate-50 text-xs border border-slate-200 p-3  font-medium focus:outline-none focus:border-amber-600 focus:bg-white"
                     />
                     
                     <div className="space-y-1 bg-slate-50 p-3 text-xs text-slate-500 font-mono">
-                      <p className="font-bold uppercase text-xs text-emerald-700">Available Tags (Auto Replaced):</p>
+                      <p className="font-bold uppercase text-xs text-amber-700">Available Tags (Auto Replaced):</p>
                       <ul className="list-disc list-inside space-y-0.5">
                         <li><code className="text-rose-600 font-bold">{`{student_name}`}</code> - Name of the student debtor</li>
                         <li><code className="text-rose-600 font-bold">{`{class_name}`}</code> - Enrolled classroom handle</li>
@@ -7058,7 +7332,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <span className="text-xs font-black uppercase tracking-widest text-slate-400 block">Result / Report Card Template</span>
                       <div className="flex gap-2">
                         <select 
-                          className="text-xs bg-white border border-slate-200 font-bold px-2 py-0.5 rounded uppercase focus:ring-1 focus:ring-violet-500 outline-none"
+                          className="text-xs bg-white border border-slate-200 font-bold px-2 py-0.5 rounded uppercase focus:ring-1 focus:ring-teal-400 outline-none"
                           onChange={(e) => {
                             const val = e.target.value;
                             let newTpl = "";
@@ -7077,7 +7351,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           <option value="detailed">Detailed</option>
                           <option value="short">Short (Quick)</option>
                         </select>
-                        <span className="text-xs bg-violet-50 text-violet-700 border border-violet-100 font-bold px-2 py-0.5 rounded-full uppercase">Result</span>
+                        <span className="text-xs bg-teal-50 text-teal-700 border border-teal-100 font-bold px-2 py-0.5 rounded-full uppercase">Result</span>
                       </div>
                     </div>
                     
@@ -7086,11 +7360,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={appSettings.resultTemplate}
                       onChange={(e) => updateSetting('resultTemplate', e.target.value)}
                       placeholder="Insert your custom result/report card template copy..."
-                      className="w-full bg-slate-50 text-xs border border-slate-200 p-3  font-medium focus:outline-none focus:border-violet-600 focus:bg-white"
+                      className="w-full bg-slate-50 text-xs border border-slate-200 p-3  font-medium focus:outline-none focus:border-teal-600 focus:bg-white"
                     />
                     
                     <div className="space-y-1 bg-slate-50 p-3 text-xs text-slate-500 font-mono">
-                      <p className="font-bold uppercase text-xs text-violet-700">Available Tags (Auto Replaced):</p>
+                      <p className="font-bold uppercase text-xs text-teal-700">Available Tags (Auto Replaced):</p>
                       <ul className="list-disc list-inside space-y-0.5">
                         <li><code className="text-rose-600 font-bold">{`{student_name}`}</code> - Name of the student</li>
                         <li><code className="text-rose-600 font-bold">{`{roll_number}`}</code> - Roll registry number</li>
@@ -7202,7 +7476,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={tName}
                       onChange={(e) => setTName(e.target.value)}
                       placeholder="e.g. Johnathan Miller"
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     />
                   </div>
 
@@ -7215,7 +7489,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={tPassword}
                         onChange={(e) => setTPassword(e.target.value)}
                         placeholder="nsb123"
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       />
                     </div>
                   </div>
@@ -7227,7 +7501,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={tEmail}
                       onChange={(e) => setTEmail(e.target.value)}
                       placeholder="e.g. jmiller@school.com"
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     />
                   </div>
 
@@ -7239,7 +7513,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={tSubject}
                       onChange={(e) => setTSubject(e.target.value)}
                       placeholder="e.g. Physics, History, etc."
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     />
                   </div>
 
@@ -7251,7 +7525,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={tPhone}
                       onChange={(e) => setTPhone(e.target.value)}
                       placeholder="e.g. +1-555-0819"
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     />
                   </div>
                 </div>
@@ -7268,7 +7542,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={tName}
                       onChange={(e) => setTName(e.target.value)}
                       placeholder="e.g. Sarah Connor"
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     />
                   </div>
 
@@ -7281,7 +7555,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={tPassword}
                         onChange={(e) => setTPassword(e.target.value)}
                         placeholder="nsb123"
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       />
                     </div>
                   </div>
@@ -7294,7 +7568,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={tEmail}
                       onChange={(e) => setTEmail(e.target.value)}
                       placeholder="e.g. sconnor@school.com"
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     />
                   </div>
 
@@ -7306,7 +7580,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={tPhone}
                       onChange={(e) => setTPhone(e.target.value)}
                       placeholder="e.g. +1-555-4321"
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     />
                   </div>
                 </div>
@@ -7328,20 +7602,20 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             onClick={() => setFormStep(s.step)}
                             className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
                               formStep === s.step 
-                                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 scale-110' 
+                                ? 'bg-teal-600 text-white shadow-lg shadow-teal-200 scale-110' 
                                 : formStep > s.step 
-                                  ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-100'
+                                  ? 'bg-amber-500 text-white shadow-lg shadow-amber-100'
                                   : 'bg-slate-100 text-slate-400 grayscale hover:grayscale-0'
                             }`}
                           >
                             <s.icon size={18} strokeWidth={2.5} />
                           </div>
-                          <span className={`text-xs font-black uppercase tracking-widest ${formStep === s.step ? 'text-indigo-600' : 'text-slate-400'}`}>
+                          <span className={`text-xs font-black uppercase tracking-widest ${formStep === s.step ? 'text-teal-600' : 'text-slate-400'}`}>
                             {s.label}
                           </span>
                         </div>
                         {i < 2 && (
-                          <div className={`flex-1 h-0.5 mx-2 rounded-full transition-colors ${formStep > s.step + 1 ? 'bg-emerald-500' : 'bg-slate-100'}`}></div>
+                          <div className={`flex-1 h-0.5 mx-2 rounded-full transition-colors ${formStep > s.step + 1 ? 'bg-amber-500' : 'bg-slate-100'}`}></div>
                         )}
                       </React.Fragment>
                     ))}
@@ -7350,23 +7624,23 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {/* STEP 1: PERSONAL IDENTITY */}
                   {formStep === 1 && (
                     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-4">
-                      <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-2xl flex items-center gap-4">
+                      <div className="p-4 bg-teal-50/50 border border-teal-100 rounded-2xl flex items-center gap-4">
                         <div className="relative group">
-                          <div className="w-16 h-16 bg-white rounded-2xl border-2 border-dashed border-indigo-200 flex items-center justify-center overflow-hidden shadow-sm transition-all group-hover:border-indigo-400">
+                          <div className="w-16 h-16 bg-white rounded-2xl border-2 border-dashed border-teal-200 flex items-center justify-center overflow-hidden shadow-sm transition-all group-hover:border-teal-400">
                             {sPhoto ? (
                               <img src={sPhoto} alt="Profile" className="w-full h-full object-cover" />
                             ) : (
-                              <User size={24} className="text-indigo-300" />
+                              <User size={24} className="text-teal-300" />
                             )}
                           </div>
-                          <label className="absolute -bottom-2 -right-2 bg-indigo-600 text-white p-1.5 rounded-xl cursor-pointer shadow-lg hover:bg-indigo-700 transition-all border-2 border-white">
+                          <label className="absolute -bottom-2 -right-2 bg-teal-600 text-white p-1.5 rounded-xl cursor-pointer shadow-lg hover:bg-teal-700 transition-all border-2 border-white">
                             <Upload size={12} strokeWidth={3} />
                             <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
                           </label>
                         </div>
                         <div>
-                          <h4 className="text-sm font-black text-indigo-900 uppercase tracking-tight">Student Profile Image</h4>
-                          <p className="text-xs text-indigo-500 font-bold uppercase tracking-wider">A clear photo helps in identification</p>
+                          <h4 className="text-sm font-black text-teal-900 uppercase tracking-tight">Student Profile Image</h4>
+                          <p className="text-xs text-teal-500 font-bold uppercase tracking-wider">A clear photo helps in identification</p>
                         </div>
                       </div>
 
@@ -7379,7 +7653,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             value={sName}
                             onChange={(e) => setSName(e.target.value)}
                             placeholder="e.g. Muhammad Ali"
-                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                           />
                         </div>
 
@@ -7392,7 +7666,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               value={sUsername}
                               onChange={(e) => setSUsername(e.target.value)}
                               placeholder="login_id"
-                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                             />
                           </div>
                           <div className="space-y-1">
@@ -7403,7 +7677,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               value={sPassword}
                               onChange={(e) => setSPassword(e.target.value)}
                               placeholder="nsb123"
-                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                             />
                           </div>
                         </div>
@@ -7418,7 +7692,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               value={sParentPhone}
                               onChange={(e) => setSParentPhone(e.target.value)}
                               placeholder="e.g. 03001234567"
-                              className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                              className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-amber-500 outline-none transition-all"
                             />
                           </div>
                         </div>
@@ -7459,7 +7733,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 setSRoll('');
                               }
                             }}
-                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                           >
                             <option value="">-- Choose Class --</option>
                             {classes.map(cl => (
@@ -7475,7 +7749,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             value={sRoll}
                             onChange={(e) => setSRoll(e.target.value)}
                             placeholder="e.g. 101"
-                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                           />
                         </div>
                       </div>
@@ -7488,7 +7762,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             value={sStudentPhone}
                             onChange={(e) => setSStudentPhone(e.target.value)}
                             placeholder="e.g. 03217654321"
-                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                           />
                         </div>
                         <div className="space-y-1">
@@ -7498,7 +7772,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             value={sEmail}
                             onChange={(e) => setSEmail(e.target.value)}
                             placeholder="e.g. ali@school.com"
-                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                           />
                         </div>
                       </div>
@@ -7508,7 +7782,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <select
                           value={sEnrollmentMonth}
                           onChange={(e) => setSEnrollmentMonth(e.target.value)}
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-teal-500 outline-none transition-all"
                         >
                           {MONTHS.map(m => (
                             <option key={m} value={m}>{m} 2026</option>
@@ -7538,47 +7812,47 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {/* STEP 3: FINANCIAL & ACADEMY */}
                   {formStep === 3 && (
                     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
-                      <div className="p-6 bg-emerald-50 border border-emerald-100 rounded-3xl space-y-4">
+                      <div className="p-6 bg-amber-50 border border-amber-100 rounded-3xl space-y-4">
                         <div className="flex items-center gap-3">
-                          <div className="p-2 bg-white text-emerald-600 rounded-xl shadow-sm">
+                          <div className="p-2 bg-white text-amber-600 rounded-xl shadow-sm">
                             <CreditCard size={20} />
                           </div>
                           <div>
-                            <h4 className="text-sm font-black text-emerald-900 uppercase tracking-tight ">Fee Management</h4>
-                            <p className="text-xs text-emerald-600 font-bold uppercase tracking-wider">Set the monthly base fee for this student</p>
+                            <h4 className="text-sm font-black text-amber-900 uppercase tracking-tight ">Fee Management</h4>
+                            <p className="text-xs text-amber-600 font-bold uppercase tracking-wider">Set the monthly base fee for this student</p>
                           </div>
                         </div>
                         
                         <div className="space-y-1">
-                          <label className="text-xs font-black uppercase tracking-widest text-emerald-700 ml-1">Monthly School Fee ()</label>
+                          <label className="text-xs font-black uppercase tracking-widest text-amber-700 ml-1">Monthly School Fee ()</label>
                           <div className="relative">
-                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-600 font-black text-xs"></span>
+                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-amber-600 font-black text-xs"></span>
                             <input
                               type="number"
                               required
                               value={sBaseFee}
                               onChange={(e) => setSBaseFee(e.target.value)}
                               placeholder="e.g. 2000"
-                              className="w-full pl-12 pr-4 py-4 bg-white border border-emerald-200 rounded-2xl text-xl font-black text-emerald-950 focus:ring-4 focus:ring-emerald-200/50 outline-none transition-all placeholder:text-emerald-200"
+                              className="w-full pl-12 pr-4 py-4 bg-white border border-amber-200 rounded-2xl text-xl font-black text-amber-600 focus:ring-4 focus:ring-amber-200/50 outline-none transition-all placeholder:text-amber-200"
                             />
                           </div>
                         </div>
                       </div>
 
-                      <div className="p-6 bg-indigo-950 text-white rounded-3xl space-y-6 shadow-xl shadow-indigo-200 border-l-8 border-indigo-500">
+                      <div className="p-6 bg-teal-900 text-white rounded-3xl space-y-6 shadow-xl shadow-teal-200 border-l-8 border-teal-500">
                         <div className="flex items-center justify-between">
                           <div className="space-y-1">
                             <h4 className="text-sm font-black uppercase tracking-tight  flex items-center gap-2">
                               <Zap size={18} className="text-amber-400" /> Academy Enrollment
                             </h4>
-                            <p className="text-xs text-indigo-300 font-medium leading-relaxed max-w-[200px]">
+                            <p className="text-xs text-teal-300 font-medium leading-relaxed max-w-[200px]">
                               Is this student also attending evening academy classes?
                             </p>
                           </div>
                           <button 
                             type="button" 
                             onClick={() => setSIsAcademy(!sIsAcademy)}
-                            className={`w-14 h-7 rounded-full flex items-center px-1 transition-all ${sIsAcademy ? 'bg-indigo-500' : 'bg-slate-700'}`}
+                            className={`w-14 h-7 rounded-full flex items-center px-1 transition-all ${sIsAcademy ? 'bg-teal-500' : 'bg-slate-700'}`}
                           >
                             <div className={`w-5 h-5 bg-white rounded-full shadow-lg transition-transform ${sIsAcademy ? 'translate-x-7' : 'translate-x-0'}`}></div>
                           </button>
@@ -7586,7 +7860,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                         {sIsAcademy && (
                           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-2 pt-2 border-t border-white/10">
-                            <label className="text-xs font-black text-indigo-300 uppercase tracking-widest">Select Academy Subjects</label>
+                            <label className="text-xs font-black text-teal-300 uppercase tracking-widest">Select Academy Subjects</label>
                             <input
                               type="text"
                               value={sAcademySubjects}
@@ -7609,7 +7883,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           </button>
                           <button 
                             type="submit"
-                            className="flex-[2] py-4 bg-indigo-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 active:scale-95 flex items-center justify-center gap-2"
+                            className="flex-[2] py-4 bg-teal-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-teal-700 transition-all shadow-xl shadow-teal-200 active:scale-95 flex items-center justify-center gap-2"
                           >
                             <Save size={16} /> Complete Registration
                           </button>
@@ -7633,7 +7907,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={cClassName}
                         onChange={(e) => setCClassName(e.target.value)}
                         placeholder="e.g. Grade 10"
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       />
                     </div>
 
@@ -7645,7 +7919,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={cSection}
                         onChange={(e) => setCSection(e.target.value)}
                         placeholder="e.g. A"
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       />
                     </div>
                   </div>
@@ -7655,7 +7929,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <select
                       value={cTeacherId}
                       onChange={(e) => setCTeacherId(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                     >
                       <option value="">Choose Class Teacher</option>
                       {teachers.map(t => (
@@ -7670,7 +7944,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="space-y-2">
                       <div className="flex gap-2">
                         <select 
-                          className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-md text-xs focus:outline-none focus:border-indigo-500"
+                          className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-md text-xs focus:outline-none focus:border-teal-500"
                           onChange={(e) => {
                             const sub = e.target.value;
                             if (sub === 'OTHER_MANUAL') {
@@ -7686,7 +7960,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           {STANDARD_SUBJECTS_LIST.filter(s => !cSubjects.includes(s)).map(s => (
                             <option key={s} value={s}>{s}</option>
                           ))}
-                          <option value="OTHER_MANUAL" className="font-bold text-indigo-600">+ Other (Manual Entry)</option>
+                          <option value="OTHER_MANUAL" className="font-bold text-teal-600">+ Other (Manual Entry)</option>
                         </select>
                       </div>
 
@@ -7697,7 +7971,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             placeholder="Enter custom subject name..."
                             value={manualSubjectName}
                             onChange={(e) => setManualSubjectName(e.target.value)}
-                            className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-md text-xs focus:outline-none focus:border-indigo-500 font-bold uppercase"
+                            className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-md text-xs focus:outline-none focus:border-teal-500 font-bold uppercase"
                           />
                           <button 
                             type="button"
@@ -7713,7 +7987,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 toast.error("Subject already exists in list.");
                               }
                             }}
-                            className="px-4 py-2 bg-indigo-600 text-white text-xs font-black uppercase tracking-widest rounded-md"
+                            className="px-4 py-2 bg-teal-600 text-white text-xs font-black uppercase tracking-widest rounded-md"
                           >
                             Add
                           </button>
@@ -7723,12 +7997,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                     <div className="flex flex-wrap gap-2">
                       {cSubjects.map(sub => (
-                        <span key={sub} className="flex items-center gap-1.5 bg-indigo-100 text-indigo-700 text-xs font-bold px-2.5 py-1 rounded-full border border-indigo-200">
+                        <span key={sub} className="flex items-center gap-1.5 bg-teal-100 text-teal-700 text-xs font-bold px-2.5 py-1 rounded-full border border-teal-200">
                           {sub}
                           <button 
                             type="button"
                             onClick={() => setCSubjects(cSubjects.filter(s => s !== sub))}
-                            className="hover:text-indigo-900"
+                            className="hover:text-teal-900"
                           >
                             <X size={10} />
                           </button>
@@ -7751,7 +8025,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <select
                         value={ttClassId}
                         onChange={(e) => setTtClassId(e.target.value)}
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       >
                         {classes.map(cl => (
                           <option key={cl.id} value={cl.id}>{cl.className} ({cl.section})</option>
@@ -7764,7 +8038,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <select
                         value={ttDay}
                         onChange={(e) => setTtDay(e.target.value as DayOfWeek)}
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       >
                         {DAYS.map(day => (
                           <option key={day} value={day}>{day}</option>
@@ -7788,7 +8062,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 setTtPeriod(e.target.value);
                               }
                             }}
-                            className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                            className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                           >
                             {['Period 1', 'Period 2', 'Period 3', 'Period 4', 'Period 5', ...(appSettings.extraPeriods[ttClassId || selectedTimetableClass] || [])].map(p => (
                               <option key={p} value={p}>{p}</option>
@@ -7803,7 +8077,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               value={ttPeriod}
                               onChange={(e) => setTtPeriod(e.target.value)}
                               placeholder="e.g. Period 6"
-                              className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                              className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                             />
                             <button
                               type="button"
@@ -7828,7 +8102,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={ttTime}
                         onChange={(e) => setTtTime(e.target.value)}
                         placeholder="e.g. 08:30 AM - 09:30 AM"
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       />
                     </div>
                   </div>
@@ -7842,7 +8116,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         value={ttSubject}
                         onChange={(e) => setTtSubject(e.target.value)}
                         placeholder="e.g. Algebra"
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       />
                     </div>
 
@@ -7851,7 +8125,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <select
                         value={ttTeacherId}
                         onChange={(e) => setTtTeacherId(e.target.value)}
-                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-teal-500"
                       >
                         <option value="">Select Instructor</option>
                         {teachers.map(t => (
@@ -7875,7 +8149,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   id="modal-submit-btn"
                   type="submit"
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all"
+                  className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-all"
                 >
                   Save Entity
                 </button>
@@ -7898,10 +8172,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             >
               {/* Modal Top Banner & Student Info */}
               <div className="pt-2 pb-5 px-4 sm:pt-4 sm:pb-8 sm:px-8 bg-slate-900 text-white flex justify-between items-start relative overflow-hidden print:bg-white print:text-slate-950 print:border-b print:p-4">
-                <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full -mr-32 -mt-32 blur-3xl print:hidden"></div>
+                <div className="absolute top-0 right-0 w-64 h-64 bg-teal-500/10 rounded-full -mr-32 -mt-32 blur-3xl print:hidden"></div>
                 
                 <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center gap-5 -mt-1">
-                  <div className="relative w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden border-2 border-indigo-300/40 shadow-xl bg-slate-800 shrink-0">
+                  <div className="relative w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden border-2 border-teal-300/40 shadow-xl bg-slate-800 shrink-0">
                     {getStudentPhoto(selectedStudentReport) ? (
                       <img 
                         src={getStudentPhoto(selectedStudentReport)} 
@@ -7913,7 +8187,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     )}
                   </div>
                   <div>
-                    <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-black uppercase tracking-widest bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 mb-1.5">
+                    <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-black uppercase tracking-widest bg-teal-500/20 text-teal-300 border border-teal-500/30 mb-1.5">
                       Student Official Report
                     </span>
                     <h2 className="text-2xl sm:text-3xl font-black uppercase tracking-tight">{selectedStudentReport.name}</h2>
@@ -7921,7 +8195,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <span className="bg-white/10 text-white/90 px-3 py-1 rounded-lg text-xs font-mono font-bold border border-white/10">
                         Roll #{selectedStudentReport.rollNumber}
                       </span>
-                      <span className="bg-indigo-500/30 text-indigo-200 px-3 py-1 rounded-lg text-xs font-bold border border-indigo-400/20">
+                      <span className="bg-teal-500/30 text-teal-200 px-3 py-1 rounded-lg text-xs font-bold border border-teal-400/20">
                         {selectedStudentReport.category || 'General'}
                       </span>
                     </div>
@@ -7959,7 +8233,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-black uppercase text-slate-400 tracking-wider">Attendance Rate</span>
-                      <CalendarDays size={18} className="text-blue-500 print:hidden" />
+                      <CalendarDays size={18} className="text-teal-500 print:hidden" />
                     </div>
                     <div>
                       <div className="text-3xl font-black text-slate-900">
@@ -7978,7 +8252,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-black uppercase text-slate-400 tracking-wider">Academic Score</span>
-                      <Award size={18} className="text-indigo-500 print:hidden" />
+                      <Award size={18} className="text-teal-500 print:hidden" />
                     </div>
                     <div>
                       <div className="text-3xl font-black text-slate-900">
@@ -7997,7 +8271,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-black uppercase text-slate-400 tracking-wider">Fee Balance</span>
-                      <CreditCard size={18} className="text-emerald-500 print:hidden" />
+                      <CreditCard size={18} className="text-amber-500 print:hidden" />
                     </div>
                     <div>
                       <div className="text-3xl font-black text-slate-900">
@@ -8017,7 +8291,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {/* Test History */}
                   <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
                     <h3 className="text-xs font-black uppercase text-slate-900 tracking-wider mb-4 flex items-center gap-2">
-                      <BookOpen size={16} className="text-indigo-600 print:hidden" /> Recent Exam Marks
+                      <BookOpen size={16} className="text-teal-600 print:hidden" /> Recent Exam Marks
                     </h3>
                     <div className="space-y-2.5">
                       {marks.filter(m => m.studentId === selectedStudentReport.id).length === 0 ? (
@@ -8033,7 +8307,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <p className="text-xs font-bold text-slate-400 uppercase">{m.examType}</p>
                               </div>
                               <div className="text-right">
-                                <p className="text-xs font-black text-indigo-600">{m.marksObtained} / {m.maxMarks}</p>
+                                <p className="text-xs font-black text-teal-600">{m.marksObtained} / {m.maxMarks}</p>
                               </div>
                             </div>
                           ))
@@ -8044,7 +8318,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   {/* Attendance Log */}
                   <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
                     <h3 className="text-xs font-black uppercase text-slate-900 tracking-wider mb-4 flex items-center gap-2">
-                      <Calendar size={16} className="text-blue-600 print:hidden" /> Monthly Attendance Summary
+                      <Calendar size={16} className="text-teal-600 print:hidden" /> Monthly Attendance Summary
                     </h3>
                     <div className="space-y-2">
                       {MONTHS.map(month => {
@@ -8063,7 +8337,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           <div key={month} className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-100">
                             <span className="text-xs font-bold text-slate-800 uppercase">{month}</span>
                             <div className="flex gap-3 text-xs">
-                              <span className="font-bold text-emerald-600">P: {present}</span>
+                              <span className="font-bold text-amber-600">P: {present}</span>
                               <span className="font-bold text-amber-600">L: {leave}</span>
                               <span className="font-bold text-rose-600">A: {absent}</span>
                             </div>
@@ -8077,7 +8351,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 {/* Financial Ledger Section */}
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
                   <h3 className="text-xs font-black uppercase text-slate-900 tracking-wider mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
-                    <CreditCard size={18} className="text-emerald-600 print:hidden" /> Financial Payments & Ledger
+                    <CreditCard size={18} className="text-amber-600 print:hidden" /> Financial Payments & Ledger
                   </h3>
                   <div>
                     {(() => {
@@ -8093,15 +8367,15 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <p className="text-xs text-slate-400 ">No payments recorded.</p>
                               ) : (
                                 fData.payments.slice(0, 5).map((p, i) => (
-                                  <div key={i} className="flex items-center justify-between p-2.5 bg-emerald-50/60 rounded-xl border border-emerald-100 gap-2">
+                                  <div key={i} className="flex items-center justify-between p-2.5 bg-amber-50/60 rounded-xl border border-amber-100 gap-2">
                                     <div className="min-w-0">
-                                      <p className="text-xs font-bold text-emerald-900 uppercase">
+                                      <p className="text-xs font-bold text-amber-900 uppercase">
                                         {formatDateDDMMYY((p as any).date) || `${p.month} ${p.year}`}
                                         <span className="text-[10px] font-black text-slate-400 normal-case"> · {String(p.month).replace(/ \d{4}$/, '')} {p.year}</span>
                                       </p>
-                                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wider mt-0.5">{p.feeType || (fees.find(f => f.id === p.id)?.feeType) || 'School Fee'}</p>
+                                      <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider mt-0.5">{p.feeType || (fees.find(f => f.id === p.id)?.feeType) || 'School Fee'}</p>
                                     </div>
-                                    <span className="text-xs font-black text-emerald-700 shrink-0">{p.amount}</span>
+                                    <span className="text-xs font-black text-amber-700 shrink-0">{p.amount}</span>
                                   </div>
                                 ))
                               )}
@@ -8157,11 +8431,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-xl rounded-none shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border-t-8 border-t-emerald-600"
+              className="bg-white w-full max-w-xl rounded-none shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border-t-8 border-t-amber-600"
             >
               <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-emerald-50 text-emerald-600">
+                  <div className="p-2 bg-amber-50 text-amber-600">
                     <CheckCircle2 size={24} />
                   </div>
                   <div>
@@ -8178,7 +8452,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       setAttendanceMode(mode);
                       if (mode === 'swipe') setActiveSwipeIndex(0);
                     }}
-                    className="appearance-none pl-3 pr-8 py-1.5 bg-slate-100 border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                    className="appearance-none pl-3 pr-8 py-1.5 bg-slate-100 border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20 cursor-pointer"
                   >
                     <option value="grid">Grid View</option>
                     <option value="list">List View</option>
@@ -8202,7 +8476,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <select 
                       value={markAttendanceClassId}
                       onChange={(e) => setMarkAttendanceClassId(e.target.value)}
-                      className="w-full bg-white border border-slate-200 px-4 py-2.5 text-xs font-black uppercase tracking-widest text-slate-700 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-white border border-slate-200 px-4 py-2.5 text-xs font-black uppercase tracking-widest text-slate-700 focus:outline-none focus:border-amber-500"
                     >
                       <option value="">-- Choose Class --</option>
                       {classes.map(c => <option key={c.id} value={c.id}>{c.className} - {c.section}</option>)}
@@ -8214,7 +8488,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       type="date"
                       value={attendanceFilterDate}
                       onChange={(e) => setAttendanceFilterDate(e.target.value)}
-                      className="w-full bg-white border border-slate-200 px-4 py-2.5 text-xs font-black uppercase tracking-widest text-slate-700 focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-white border border-slate-200 px-4 py-2.5 text-xs font-black uppercase tracking-widest text-slate-700 focus:outline-none focus:border-amber-500"
                     />
                   </div>
                 </div>
@@ -8238,14 +8512,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               {/* Progress indicators */}
                               <div className="flex justify-between items-center text-xs text-slate-600 font-bold px-1">
                                 <span>Student {activeSwipeIndex + 1} of {markAttRecords.length}</span>
-                                <span className="font-mono bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full text-xs font-bold border border-indigo-100">
+                                <span className="font-mono bg-teal-50 text-teal-700 px-2.5 py-0.5 rounded-full text-xs font-bold border border-teal-100">
                                   {Math.round((activeSwipeIndex / markAttRecords.length) * 100)}% Complete
                                 </span>
                               </div>
                               
                               <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
                                 <div 
-                                  className="bg-indigo-600 h-full transition-all duration-300 rounded-full" 
+                                  className="bg-teal-600 h-full transition-all duration-300 rounded-full" 
                                   style={{ width: `${((activeSwipeIndex + 1) / markAttRecords.length) * 100}%` }}
                                 ></div>
                               </div>
@@ -8304,10 +8578,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                           <span className="text-xs font-black text-rose-500 uppercase tracking-widest">Swipe Left: Absent</span>
                                         </div>
                                         <div className="flex flex-col items-center gap-2">
-                                          <div className="w-10 h-10 rounded-full border-2 border-emerald-100 flex items-center justify-center text-emerald-500">
+                                          <div className="w-10 h-10 rounded-full border-2 border-amber-100 flex items-center justify-center text-amber-500">
                                             <ArrowRight size={20} />
                                           </div>
-                                          <span className="text-xs font-black text-emerald-500 uppercase tracking-widest">Swipe Right: Present</span>
+                                          <span className="text-xs font-black text-amber-500 uppercase tracking-widest">Swipe Right: Present</span>
                                         </div>
                                       </div>
                                     </div>
@@ -8319,7 +8593,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         })()
                       ) : (
                         <div className="py-20 text-center animate-fade-in">
-                          <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                          <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-4">
                             <CheckCircle2 size={32} />
                           </div>
                           <h3 className="text-lg font-black text-slate-900 uppercase ">Roster Complete</h3>
@@ -8359,10 +8633,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   }}
                                   className={`px-2 py-1 text-xs font-black uppercase tracking-tighter ${
                                     rec.status === status 
-                                      ? status === 'present' ? 'bg-emerald-600 text-white shadow-sm' :
+                                      ? status === 'present' ? 'bg-amber-600 text-white shadow-sm' :
                                         status === 'absent' ? 'bg-rose-600 text-white shadow-sm' :
                                         status === 'late' ? 'bg-amber-500 text-white shadow-sm' :
-                                        'bg-indigo-600 text-white shadow-sm'
+                                        'bg-teal-600 text-white shadow-sm'
                                       : 'bg-slate-100 text-slate-400'
                                   }`}
                                 >
@@ -8383,7 +8657,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                        <div className="flex gap-2">
                           <button 
                             onClick={() => setMarkAttRecords(prev => prev.map(p => ({...p, status: 'present'})))}
-                            className="text-xs font-black uppercase tracking-widest text-emerald-600 hover:bg-emerald-50 px-2 py-1"
+                            className="text-xs font-black uppercase tracking-widest text-amber-600 hover:bg-amber-50 px-2 py-1"
                           >
                             All Present
                           </button>
@@ -8399,7 +8673,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       {markAttRecords.map((rec, idx) => {
                         const student = students.find(s => s.id === rec.studentId);
                         return (
-                          <div key={rec.studentId} className="flex flex-col p-4 bg-white border border-slate-100 rounded-none hover:border-emerald-200 transition-colors">
+                          <div key={rec.studentId} className="flex flex-col p-4 bg-white border border-slate-100 rounded-none hover:border-amber-200 transition-colors">
                             <div className="flex items-center gap-3 mb-3">
                               {getStudentPhoto(student) ? (
                                 <img src={getStudentPhoto(student)} alt={student?.name || 'Student'} className="w-10 h-10 rounded-xl object-cover border border-slate-100 bg-slate-50" />
@@ -8420,10 +8694,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                   }}
                                   className={`flex-1 py-1.5 text-xs font-black uppercase tracking-widest transition-all ${
                                     rec.status === status 
-                                      ? status === 'present' ? 'bg-emerald-600 text-white shadow-md' :
+                                      ? status === 'present' ? 'bg-amber-600 text-white shadow-md' :
                                         status === 'absent' ? 'bg-rose-600 text-white shadow-md' :
                                         status === 'late' ? 'bg-amber-500 text-white shadow-md' :
-                                        'bg-indigo-600 text-white shadow-md'
+                                        'bg-teal-600 text-white shadow-md'
                                       : 'text-slate-400 hover:text-slate-900 hover:bg-white'
                                   }`}
                                 >
@@ -8449,7 +8723,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   disabled={!markAttendanceClassId}
                   onClick={handlePrincipalMarkAttendance}
-                  className="px-8 py-3 bg-slate-950 text-white text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2 hover:bg-emerald-600 disabled:opacity-50 disabled:bg-slate-400 transition-all rounded-none shadow-xl"
+                  className="px-8 py-3 bg-slate-950 text-white text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2 hover:bg-amber-600 disabled:opacity-50 disabled:bg-slate-400 transition-all rounded-none shadow-xl"
                 >
                   <Save size={14} /> Commit Attendance Record
                 </button>
@@ -8477,7 +8751,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   onClick={() => { handleTabChange(item.id as any); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
                   className={`flex flex-col items-center justify-center transition-all duration-300 ${
                     isActive 
-                      ? `rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-${item.color === 'emerald' ? 'emerald' : item.color === 'indigo' ? 'indigo' : item.color === 'violet' ? 'rose' : 'teal'}-600 text-white` 
+                      ? `rounded-full p-2.5 shadow-2xl border-4 border-slate-900 scale-110 bg-${item.color === 'emerald' ? 'amber' : item.color === 'indigo' ? 'teal' : item.color === 'violet' ? 'rose' : 'teal'}-600 text-white` 
                       : 'text-slate-400 hover:text-white p-2'
                   }`}
                   style={isActive ? { minHeight: '52px', minWidth: '52px' } : {}}
@@ -8495,7 +8769,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             <button
               id="mobile-nav-menu"
               onClick={() => setSidebarOpen(true)}
-              className="flex flex-col items-center justify-center py-1 transition-all text-center text-slate-400 hover:text-emerald-400 focus:outline-none"
+              className="flex flex-col items-center justify-center py-1 transition-all text-center text-slate-400 hover:text-amber-400 focus:outline-none"
             >
               <Menu size={18} />
               <span className="text-[10px] mt-0.5 font-bold uppercase tracking-wider">Menu</span>
@@ -8507,13 +8781,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
       {/* ========== INTERACTIVE CLASS INSIGHTS MODAL ========== */}
       {isClassDetailModalOpen && selectedClassForDetails && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-[100] backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-none w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-scale-up border-t-8 border-t-indigo-600">
+          <div className="bg-white rounded-none w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-scale-up border-t-8 border-t-teal-600">
             {/* Modal Header */}
             <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-4">
-                <div className="w-14 h-14 bg-slate-950 text-white flex flex-col items-center justify-center font-black  border-l-4 border-indigo-600">
+                <div className="w-14 h-14 bg-slate-950 text-white flex flex-col items-center justify-center font-black  border-l-4 border-teal-600">
                   <span className="text-xl">{selectedClassForDetails.className}</span>
-                  <span className="text-xs uppercase tracking-widest bg-indigo-600 w-full text-center py-0.5">{selectedClassForDetails.section}</span>
+                  <span className="text-xs uppercase tracking-widest bg-teal-600 w-full text-center py-0.5">{selectedClassForDetails.section}</span>
                 </div>
                 <div>
                   <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">Interactive Class Insights</h2>
@@ -8533,13 +8807,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               {selectedClassForDetails.subjects && selectedClassForDetails.subjects.length > 0 && (
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                    <BookOpen size={18} className="text-blue-600" />
+                    <BookOpen size={18} className="text-teal-600" />
                     <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Academic Curriculum / Subjects</h3>
                   </div>
                   <div className="flex flex-wrap gap-3">
                     {selectedClassForDetails.subjects.map(sub => (
                       <div key={sub} className="bg-slate-50 border border-slate-200 px-4 py-2 flex items-center gap-2 shadow-sm">
-                        <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
+                        <div className="w-2 h-2 bg-teal-500 rounded-full"></div>
                         <span className="text-xs font-black text-slate-700 uppercase ">{sub}</span>
                       </div>
                     ))}
@@ -8550,7 +8824,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               {/* Section 1: Timetable */}
               <div className="space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                  <Calendar size={18} className="text-indigo-600" />
+                  <Calendar size={18} className="text-teal-600" />
                   <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Period Schedule (Weekly)</h3>
                 </div>
                 
@@ -8572,7 +8846,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               openAddModal('timetable');
                             }
                           }}
-                          className="bg-indigo-600 hover:bg-indigo-500 p-1 rounded transition-colors"
+                          className="bg-teal-600 hover:bg-teal-500 p-1 rounded transition-colors"
                           title="Add entry to this day"
                         >
                           <Plus size={8} />
@@ -8583,8 +8857,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           .filter(tt => tt.classId === selectedClassForDetails.id && tt.day === day)
                           .sort((a,b) => a.period.localeCompare(b.period))
                           .map(entry => (
-                            <div key={entry.id} className="p-2 bg-white border border-slate-200 shadow-xs border-l-2 border-l-indigo-500">
-                              <p className="text-xs font-black text-indigo-600 uppercase tracking-tighter leading-none mb-1">{entry.period}</p>
+                            <div key={entry.id} className="p-2 bg-white border border-slate-200 shadow-xs border-l-2 border-l-teal-500">
+                              <p className="text-xs font-black text-teal-600 uppercase tracking-tighter leading-none mb-1">{entry.period}</p>
                               <p className="text-xs font-extrabold text-slate-900 uppercase  truncate leading-none mb-0.5">{entry.subject}</p>
                               <p className="text-xs text-slate-400 font-bold uppercase truncate">{getTeacherName(entry.teacherId)}</p>
                             </div>
@@ -8604,10 +8878,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               <div className="space-y-4 pt-4 border-t border-slate-100">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                   <div className="flex items-center gap-2">
-                    <Users size={18} className="text-emerald-600" />
+                    <Users size={18} className="text-amber-600" />
                     <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Enrolled Student Roster</h3>
                   </div>
-                  <span className="bg-emerald-50 text-emerald-700 text-xs font-black px-3 py-1 rounded-full uppercase border border-emerald-100">
+                  <span className="bg-amber-50 text-amber-700 text-xs font-black px-3 py-1 rounded-full uppercase border border-amber-100">
                     {students.filter(s => s.classId === selectedClassForDetails.id).length} Active Pupils
                   </span>
                 </div>
@@ -8616,7 +8890,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Jump to Student Profile:</label>
                   <select 
                     id="class-modal-student-jump"
-                    className="w-full bg-slate-50 border border-slate-200 p-3 rounded-none focus:ring-1 focus:ring-indigo-600 outline-none font-bold text-xs uppercase tracking-wider"
+                    className="w-full bg-slate-50 border border-slate-200 p-3 rounded-none focus:ring-1 focus:ring-teal-600 outline-none font-bold text-xs uppercase tracking-wider"
                     onChange={(e) => {
                       if (e.target.value) {
                          toast.info(`Reviewing profile for Student Registry #${e.target.value}...`);
@@ -8658,7 +8932,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
                <button
                  onClick={() => setIsClassDetailModalOpen(false)}
-                 className="px-8 py-3 bg-slate-900 hover:bg-indigo-600 text-white font-black text-xs uppercase tracking-[0.2em] transition-all shadow-lg shadow-slate-200"
+                 className="px-8 py-3 bg-slate-900 hover:bg-teal-600 text-white font-black text-xs uppercase tracking-[0.2em] transition-all shadow-lg shadow-slate-200"
                >
                  Close Insights
                </button>
@@ -8752,7 +9026,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden border border-slate-200 max-h-[92vh] flex flex-col"
             >
-              <div className="bg-violet-600 p-5 sm:p-6 text-white flex justify-between items-center gap-3 shrink-0">
+              <div className="bg-teal-600 p-5 sm:p-6 text-white flex justify-between items-center gap-3 shrink-0">
                 <div className="flex items-center gap-3 min-w-0">
                   {(() => {
                     const st = studentDetailModal.student!;
@@ -8767,7 +9041,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   })()}
                   <div className="min-w-0">
                     <h2 className="text-base sm:text-lg font-black uppercase tracking-tight truncate">Student Detail</h2>
-                    <p className="text-xs uppercase font-bold text-violet-100 truncate">
+                    <p className="text-xs uppercase font-bold text-teal-100 truncate">
                       {studentDetailModal.student.name} • Roll #{studentDetailModal.student.rollNumber || 'N/A'}
                     </p>
                   </div>
@@ -8827,11 +9101,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       </div>
 
                       {st.academySubjects && st.academySubjects.length > 0 && (
-                        <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-3">
-                          <span className="text-[10px] font-black uppercase text-indigo-400 block mb-1.5">Academy Subjects Focus</span>
+                        <div className="bg-teal-50/50 border border-teal-100 rounded-2xl p-3">
+                          <span className="text-[10px] font-black uppercase text-teal-400 block mb-1.5">Academy Subjects Focus</span>
                           <div className="flex flex-wrap gap-1.5">
                             {st.academySubjects.map((sub, idx) => (
-                              <span key={idx} className="bg-white border border-indigo-200 text-indigo-700 text-xs font-bold px-2 py-0.5 uppercase">{sub}</span>
+                              <span key={idx} className="bg-white border border-teal-200 text-teal-700 text-xs font-bold px-2 py-0.5 uppercase">{sub}</span>
                             ))}
                           </div>
                         </div>
@@ -8842,7 +9116,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <span className="text-[10px] font-black uppercase text-slate-400 block mb-3">Fee Account Summary</span>
                         <div className="grid grid-cols-3 gap-3 text-center">
                           <div>
-                            <span className="text-lg font-black text-emerald-600 block">{totalPaid.toLocaleString()}</span>
+                            <span className="text-lg font-black text-amber-600 block">{totalPaid.toLocaleString()}</span>
                             <span className="text-[10px] font-black uppercase text-slate-400">Total Paid</span>
                           </div>
                           <div>
@@ -8863,7 +9137,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5 shrink-0">
                 <button
                   onClick={() => openEditModal('student', studentDetailModal.student!.id)}
-                  className="px-4 py-2.5 bg-emerald-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-slate-900 transition-all shadow-md flex items-center gap-2 cursor-pointer"
+                  className="px-4 py-2.5 bg-amber-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-slate-900 transition-all shadow-md flex items-center gap-2 cursor-pointer"
                 >
                   <Edit2 size={14} /> Edit Student
                 </button>
@@ -8890,14 +9164,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             </button>
             <div className="p-6 space-y-6">
               <div className="text-center space-y-2">
-                <div className="w-12 h-12 bg-indigo-100 flex items-center justify-center rounded-2xl mx-auto mb-4 text-indigo-600">
+                <div className="w-12 h-12 bg-teal-100 flex items-center justify-center rounded-2xl mx-auto mb-4 text-teal-600">
                   <CreditCard size={24} />
                 </div>
                 <h3 className="text-lg font-black text-slate-900 uppercase">Fee Payment</h3>
                 <p className="text-xs font-black text-slate-400 uppercase tracking-widest">{feePaymentModal.month} 2026</p>
                 <div className="flex flex-col gap-1 items-center mt-2 border-t border-slate-100 pt-3">
                    <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Previous Remaining: {feePaymentModal.previousArrears}</span>
-                   <span className="text-xs font-bold text-indigo-600 uppercase tracking-widest">Current Fee: {feePaymentModal.pending}</span>
+                   <span className="text-xs font-bold text-teal-600 uppercase tracking-widest">Current Fee: {feePaymentModal.pending}</span>
                 </div>
               </div>
 
@@ -8912,7 +9186,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <select
                     value={feePaymentModal.feeType}
                     onChange={(e) => setFeePaymentModal({ ...feePaymentModal, feeType: e.target.value })}
-                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500 focus:ring-1 transition-colors outline-none appearance-none cursor-pointer"
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-1 transition-colors outline-none appearance-none cursor-pointer"
                   >
                     <option value="School Fee">School Fee</option>
                     <option value="Tuition Fee">Tuition Fee</option>
@@ -8926,7 +9200,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       type="number"
                       value={feePaymentModal.amount}
                       onChange={(e) => setFeePaymentModal({ ...feePaymentModal, amount: e.target.value })}
-                      className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xl font-black text-slate-900 focus:outline-none focus:border-indigo-500 focus:ring-1 transition-colors outline-none"
+                      className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xl font-black text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-1 transition-colors outline-none"
                     />
                   </div>
                 </div>
@@ -8944,7 +9218,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       toast.error("Enter a valid non-zero amount");
                     }
                   }}
-                  className="w-full py-4 bg-indigo-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"
+                  className="w-full py-4 bg-teal-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"
                 >
                   Confirm Payment
                 </button>
@@ -8976,14 +9250,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     type="text"
                     value={feeEditModal.desc}
                     onChange={(e) => setFeeEditModal({ ...feeEditModal, desc: e.target.value })}
-                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500 focus:ring-1 transition-colors outline-none"
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-1 transition-colors outline-none"
                   />
                 </div>
               )}
 
               {feeEditModal.type === 'payment' && (
                 <>
-                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-4 space-y-2">
+                  <div className="bg-teal-50/50 border border-teal-100 rounded-2xl p-4 space-y-2">
                     <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
                       <span>Month</span>
                       <span className="text-slate-900 font-black">{feeEditModal.desc || 'N/A'}</span>
@@ -9010,7 +9284,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <select
                       value={feeEditModal.feeType}
                       onChange={(e) => setFeeEditModal({ ...feeEditModal, feeType: e.target.value })}
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500 appearance-none cursor-pointer"
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500 appearance-none cursor-pointer"
                     >
                       <option value="School Fee">School Fee</option>
                       <option value="Tuition Fee">Tuition Fee</option>
@@ -9030,7 +9304,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     type="number"
                     value={feeEditModal.amount}
                     onChange={(e) => setFeeEditModal({ ...feeEditModal, amount: e.target.value })}
-                    className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xl font-black text-slate-900 focus:outline-none focus:border-indigo-500 focus:ring-1 transition-colors outline-none"
+                    className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xl font-black text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-1 transition-colors outline-none"
                   />
                 </div>
               </div>
@@ -9048,7 +9322,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     setFeeEditModal({ ...feeEditModal, isOpen: false });
                     toast.success("Record updated successfully!");
                   }}
-                  className="w-full py-4 bg-indigo-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"
+                  className="w-full py-4 bg-teal-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"
                 >
                   <Save size={16} /> Save Changes
                 </button>
@@ -9134,8 +9408,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   if (absents.length === 0) {
                     return (
                       <div className="py-14 text-center space-y-3">
-                        <div className="w-14 h-14 mx-auto rounded-full bg-emerald-50 flex items-center justify-center">
-                          <CheckCircle2 size={26} className="text-emerald-600" />
+                        <div className="w-14 h-14 mx-auto rounded-full bg-amber-50 flex items-center justify-center">
+                          <CheckCircle2 size={26} className="text-amber-600" />
                         </div>
                         <p className="text-sm font-black text-slate-700 uppercase tracking-wider">No Absentees 🎉</p>
                         <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Everyone is present for this selection.</p>
@@ -9162,7 +9436,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider truncate">
                               {sClass} | Roll: {st?.rollNumber || 'N/A'} | {acc.date}
                             </p>
-                            <p className={`text-[10px] font-black uppercase tracking-wider ${hasPhone ? 'text-emerald-600' : 'text-rose-500'}`}>
+                            <p className={`text-[10px] font-black uppercase tracking-wider ${hasPhone ? 'text-amber-600' : 'text-rose-500'}`}>
                               {hasPhone ? phone : 'No Phone Number'}
                             </p>
                           </div>
@@ -9172,7 +9446,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           disabled={!st || !hasPhone}
                           title={hasPhone ? `Send WhatsApp to ${stName}'s parent` : 'No phone number available'}
                           className={`p-2.5 flex items-center justify-center rounded-xl transition-all shadow-md active:scale-95 cursor-pointer shrink-0 ${
-                            hasPhone ? 'bg-emerald-600 hover:bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                            hasPhone ? 'bg-amber-600 hover:bg-slate-900 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                           }`}
                         >
                           <Send size={16} />
@@ -9185,7 +9459,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
               <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-between items-center gap-3 shrink-0">
                 <div className="flex items-center gap-2 min-w-0">
-                  <MessageSquare size={16} className="text-emerald-600 shrink-0" />
+                  <MessageSquare size={16} className="text-amber-600 shrink-0" />
                   <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Tap Send to open WhatsApp per parent</span>
                 </div>
                 <button
@@ -9210,12 +9484,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden border border-slate-200"
             >
-              <div className="bg-emerald-600 p-6 text-white flex justify-between items-center">
+              <div className="bg-amber-600 p-6 text-white flex justify-between items-center">
                 <div>
                   <h2 className="text-xl font-black uppercase tracking-tight flex items-center gap-3">
                     <MessageSquare size={24} /> Bulk WhatsApp Dispatch
                   </h2>
-                  <p className="text-xs uppercase font-bold text-emerald-100 mt-1">Total Absents: {bulkWAModal.absents.length} students</p>
+                  <p className="text-xs uppercase font-bold text-amber-100 mt-1">Total Absents: {bulkWAModal.absents.length} students</p>
                 </div>
                 <button 
                   onClick={() => setBulkWAModal({ isOpen: false, absents: [] })}
@@ -9232,7 +9506,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <select 
                     value={bulkWAClassFilter}
                     onChange={(e) => setBulkWAClassFilter(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest outline-none focus:ring-2 focus:ring-emerald-500 appearance-none"
+                    className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest outline-none focus:ring-2 focus:ring-amber-500 appearance-none"
                   >
                     <option value="all">Filter by Class (All)</option>
                     {classes.map(c => (
@@ -9268,7 +9542,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <button 
                             onClick={() => handleSendIndividualWhatsApp(st, st.attendanceDate)}
                             title="Send WhatsApp Alert"
-                            className="p-2.5 bg-emerald-600 hover:bg-slate-900 text-white flex items-center justify-center rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
+                            className="p-2.5 bg-amber-600 hover:bg-slate-900 text-white flex items-center justify-center rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
                         >
                           <Send size={16} />
                         </button>
@@ -9280,7 +9554,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
               <div className="p-6 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
                 <div className="flex items-center gap-2">
-                    <CheckCircle2 size={16} className="text-emerald-600" />
+                    <CheckCircle2 size={16} className="text-amber-600" />
                     <span className="text-xs font-black text-slate-500 uppercase tracking-widest uppercase">Click Send for each parent</span>
                 </div>
                 <button 
@@ -9305,12 +9579,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden border border-slate-200 max-h-[92vh] flex flex-col"
             >
-              <div className="bg-emerald-600 p-5 sm:p-6 text-white flex justify-between items-center gap-3 shrink-0">
+              <div className="bg-amber-600 p-5 sm:p-6 text-white flex justify-between items-center gap-3 shrink-0">
                 <div>
                   <h2 className="text-lg sm:text-xl font-black uppercase tracking-tight flex items-center gap-3">
                     <Bell size={24} /> Fee Reminder Dispatch
                   </h2>
-                  <p className="text-xs uppercase font-bold text-emerald-100 mt-1">
+                  <p className="text-xs uppercase font-bold text-amber-100 mt-1">
                     {getFeeReminderRecipients.length} students • Total pending PKR {getFeeReminderRecipients.reduce((s, r) => s + r.totalPending, 0).toLocaleString()}
                   </p>
                 </div>
@@ -9328,7 +9602,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <select
                     value={feeReminderClassFilter}
                     onChange={(e) => setFeeReminderClassFilter(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest outline-none focus:ring-2 focus:ring-emerald-500 appearance-none cursor-pointer"
+                    className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest outline-none focus:ring-2 focus:ring-amber-500 appearance-none cursor-pointer"
                   >
                     <option value="all">All Classes</option>
                     {classes.map(c => (
@@ -9346,9 +9620,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   const filtered = getFeeReminderRecipients.filter(r => feeReminderClassFilter === 'all' || r.student.classId === feeReminderClassFilter);
                   if (filtered.length === 0) {
                     return (
-                      <div className="py-10 text-center bg-emerald-50/50 rounded-2xl border border-dashed border-emerald-200">
-                        <CheckCircle2 size={28} className="text-emerald-500 mx-auto mb-2" />
-                        <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest">All fees are clear — no reminders needed!</p>
+                      <div className="py-10 text-center bg-amber-50/50 rounded-2xl border border-dashed border-amber-200">
+                        <CheckCircle2 size={28} className="text-amber-500 mx-auto mb-2" />
+                        <p className="text-xs font-bold text-amber-600 uppercase tracking-widest">All fees are clear — no reminders needed!</p>
                       </div>
                     );
                   }
@@ -9358,9 +9632,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     const sent = feeReminderSentIds.has(String(st.id));
                     const monthsText = r.pendingMonths.map(m => m.month).join(', ');
                     return (
-                      <div key={st.id || idx} className={`p-4 rounded-2xl flex items-center justify-between gap-4 shadow-sm border transition-all ${sent ? 'bg-emerald-50/60 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
+                      <div key={st.id || idx} className={`p-4 rounded-2xl flex items-center justify-between gap-4 shadow-sm border transition-all ${sent ? 'bg-amber-50/60 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
                         <div className="flex items-center gap-3 min-w-0">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm shrink-0 ${sent ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-600'}`}>
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm shrink-0 ${sent ? 'bg-amber-500 text-white' : 'bg-slate-200 text-slate-600'}`}>
                             {sent ? <CheckCircle2 size={16} /> : idx + 1}
                           </div>
                           <div className="min-w-0">
@@ -9378,7 +9652,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           <button
                             onClick={() => handleSendFeeReminderWhatsApp(st)}
                             title="Send WhatsApp Reminder"
-                            className="p-2.5 bg-emerald-600 hover:bg-slate-900 text-white flex items-center justify-center rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
+                            className="p-2.5 bg-amber-600 hover:bg-slate-900 text-white flex items-center justify-center rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
                           >
                             <Send size={16} />
                           </button>
@@ -9391,7 +9665,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
               <div className="p-5 bg-slate-50 border-t border-slate-200 flex flex-wrap justify-between items-center gap-2 shrink-0">
                 <div className="flex items-center gap-2">
-                  <CheckCircle2 size={16} className="text-emerald-600" />
+                  <CheckCircle2 size={16} className="text-amber-600" />
                   <span className="text-xs font-black text-slate-500 uppercase tracking-widest">
                     Sent: {feeReminderSentIds.size} / {getFeeReminderRecipients.length}
                   </span>
@@ -9399,7 +9673,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handleCopyAllFeeReminders}
-                    className="px-4 py-2.5 bg-indigo-600 text-white font-black text-xs uppercase tracking-widest hover:bg-indigo-700 rounded-xl transition-all shadow-md flex items-center gap-2 cursor-pointer"
+                    className="px-4 py-2.5 bg-teal-600 text-white font-black text-xs uppercase tracking-widest hover:bg-teal-700 rounded-xl transition-all shadow-md flex items-center gap-2 cursor-pointer"
                   >
                     <MessageSquare size={14} /> Copy All
                   </button>
@@ -9426,12 +9700,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-xl rounded-3xl shadow-2xl overflow-hidden border border-slate-200 max-h-[92vh]"
             >
-              <div className="bg-indigo-600 p-5 sm:p-6 text-white flex justify-between items-center gap-3">
+              <div className="bg-teal-600 p-5 sm:p-6 text-white flex justify-between items-center gap-3">
                 <div>
                   <h2 className="text-base sm:text-lg font-black uppercase tracking-tight flex items-center gap-2.5">
                     <Users size={20} /> Apply Due
                   </h2>
-                  <p className="text-[10px] uppercase font-bold text-indigo-100 mt-0.5">Paper Fund / Annual Fee / Exam Fee — single student ya pori class</p>
+                  <p className="text-[10px] uppercase font-bold text-teal-100 mt-0.5">Paper Fund / Annual Fee / Exam Fee — single student ya pori class</p>
                 </div>
                 <button
                   onClick={() => setShowBulkDueModal(false)}
@@ -9447,13 +9721,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <div className="flex gap-2 mb-2">
                   <button
                     onClick={() => setBulkDueTarget('class')}
-                    className={`flex-1 py-2.5 text-xs font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer ${bulkDueTarget === 'class' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                    className={`flex-1 py-2.5 text-xs font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer ${bulkDueTarget === 'class' ? 'bg-teal-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                   >
                     <Users size={14} className="inline mr-1" /> Whole Class
                   </button>
                   <button
                     onClick={() => setBulkDueTarget('student')}
-                    className={`flex-1 py-2.5 text-xs font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer ${bulkDueTarget === 'student' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                    className={`flex-1 py-2.5 text-xs font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer ${bulkDueTarget === 'student' ? 'bg-teal-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                   >
                     <User size={14} className="inline mr-1" /> Single Student
                   </button>
@@ -9466,7 +9740,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <select
                         value={bulkDueClassId}
                         onChange={(e) => setBulkDueClassId(e.target.value)}
-                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-indigo-500 outline-none"
+                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-teal-500 outline-none"
                       >
                         <option value="all">All Classes</option>
                         {classes.map(c => (
@@ -9480,7 +9754,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <select
                         value={bulkDueStudentId}
                         onChange={(e) => setBulkDueStudentId(e.target.value)}
-                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-indigo-500 outline-none"
+                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-teal-500 outline-none"
                       >
                         <option value="">Select Student</option>
                         {students.map(s => {
@@ -9497,7 +9771,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <select
                       value={bulkDueDesc}
                       onChange={(e) => setBulkDueDesc(e.target.value)}
-                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-indigo-500 outline-none"
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-teal-500 outline-none"
                     >
                       <option value="Paper Fund">Paper Fund</option>
                       <option value="Annual Fee">Annual Fee</option>
@@ -9515,7 +9789,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={bulkDueAmount}
                       onChange={(e) => setBulkDueAmount(e.target.value)}
                       placeholder="e.g. 200"
-                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-indigo-500 outline-none"
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-teal-500 outline-none"
                     />
                   </div>
                   <div>
@@ -9523,7 +9797,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <select
                       value={bulkDueMonth}
                       onChange={(e) => setBulkDueMonth(e.target.value)}
-                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-indigo-500 outline-none"
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-teal-500 outline-none"
                     >
                       {MONTHS.map(m => (
                         <option key={m} value={`${m} ${new Date().getFullYear()}`}>{m} {new Date().getFullYear()}</option>
@@ -9531,10 +9805,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     </select>
                   </div>
                 </div>
-                <div className="bg-indigo-50/60 border border-indigo-200 rounded-xl p-3">
+                <div className="bg-teal-50/60 border border-teal-200 rounded-xl p-3">
                   <p className="text-[11px] font-bold text-slate-600">
                     <Users size={12} className="inline mr-1" />
-                    Target: <span className="font-black text-indigo-700">{bulkDueTarget === 'student'
+                    Target: <span className="font-black text-teal-700">{bulkDueTarget === 'student'
                       ? (bulkDueStudentId ? (students.find(st => String(st.id) === String(bulkDueStudentId))?.name || '1 student') : 'Select a student')
                       : `${students.filter(st => bulkDueClassId === 'all' || st.classId === bulkDueClassId).length} students`}</span>
                     {' '}— for each, a <span className="text-rose-600 font-black">PENDING due</span> will be created. Those who haven't paid will show in <span className="text-rose-600 font-black">Remaining / Dues</span>.
@@ -9552,7 +9826,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 </button>
                 <button
                   onClick={handleApplyDueToClass}
-                  className="px-6 py-2.5 bg-indigo-600 text-white font-black text-xs uppercase tracking-widest hover:bg-indigo-700 rounded-xl transition-all shadow-md flex items-center gap-2 cursor-pointer"
+                  className="px-6 py-2.5 bg-teal-600 text-white font-black text-xs uppercase tracking-widest hover:bg-teal-700 rounded-xl transition-all shadow-md flex items-center gap-2 cursor-pointer"
                 >
                   {bulkDueTarget === 'student' ? <User size={14} /> : <Users size={14} />} {bulkDueTarget === 'student' ? 'Apply to Student' : 'Apply to All'}
                 </button>
@@ -9571,12 +9845,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden border border-slate-200"
             >
-              <div className="bg-violet-600 p-6 text-white flex justify-between items-center">
+              <div className="bg-teal-600 p-6 text-white flex justify-between items-center">
                 <div>
                   <h2 className="text-xl font-black uppercase tracking-tight flex items-center gap-3">
                     <Award size={24} /> Bulk Result Dispatch
                   </h2>
-                  <p className="text-xs uppercase font-bold text-violet-100 mt-1">
+                  <p className="text-xs uppercase font-bold text-teal-100 mt-1">
                     {resultWAModal.exam} — {resultWARows.length} students with marks
                   </p>
                 </div>
@@ -9595,7 +9869,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <select 
                     value={resultWAClassFilter}
                     onChange={(e) => setResultWAClassFilter(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest outline-none focus:ring-2 focus:ring-violet-500 appearance-none"
+                    className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black uppercase tracking-widest outline-none focus:ring-2 focus:ring-teal-400 appearance-none"
                   >
                     <option value="all">Filter by Class (All)</option>
                     {classes.map(c => (
@@ -9606,7 +9880,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 <button
                   onClick={() => handleBulkSendResultWhatsApp(resultWARows.map(r => r.student), resultWAModal.exam)}
                   disabled={resultWARows.length === 0}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-black uppercase tracking-widest rounded-xl transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[11px] font-black uppercase tracking-widest rounded-xl transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
                 >
                   <Send size={13} /> Send All
                 </button>
@@ -9625,7 +9899,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     return (
                       <div key={row.student.id || idx} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between gap-4 shadow-sm">
                         <div className="flex items-center gap-4 min-w-0">
-                          <div className="w-10 h-10 bg-violet-100 text-violet-700 rounded-full flex items-center justify-center font-black text-sm shrink-0">
+                          <div className="w-10 h-10 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center font-black text-sm shrink-0">
                             {idx + 1}
                           </div>
                           <div className="min-w-0">
@@ -9641,7 +9915,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           disabled={sending}
                           title="Send Result Report"
                           className={`p-2.5 flex items-center justify-center rounded-xl transition-all shadow-md active:scale-95 cursor-pointer ${
-                            sending ? 'bg-slate-300 text-slate-500' : 'bg-violet-600 hover:bg-violet-700 text-white'
+                            sending ? 'bg-slate-300 text-slate-500' : 'bg-teal-600 hover:bg-teal-700 text-white'
                           }`}
                         >
                           <Send size={16} />
@@ -9654,7 +9928,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
               <div className="p-6 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
                 <div className="flex items-center gap-2">
-                    <CheckCircle2 size={16} className="text-emerald-600" />
+                    <CheckCircle2 size={16} className="text-amber-600" />
                     <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Click Send for each parent — full report included</span>
                 </div>
                 <button 
@@ -9679,7 +9953,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden border border-slate-200 my-auto max-h-[92vh] flex flex-col"
             >
-              <div className="bg-emerald-600 p-4 sm:p-6 text-white flex justify-between items-center gap-3 shrink-0">
+              <div className="bg-amber-600 p-4 sm:p-6 text-white flex justify-between items-center gap-3 shrink-0">
                 <div className="flex items-center gap-3 min-w-0">
                   {(() => {
                     const st = students.find(s => String(s.id) === String(quickCollectStudentId));
@@ -9704,7 +9978,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       const st = students.find(s => String(s.id) === String(quickCollectStudentId));
                       if (!st) return null;
                       return (
-                        <p className="text-xs sm:text-xs uppercase font-bold text-emerald-100 mt-0.5 truncate">
+                        <p className="text-xs sm:text-xs uppercase font-bold text-amber-100 mt-0.5 truncate">
                           {st.name} • Roll #{st.rollNumber || 'N/A'}
                         </p>
                       );
@@ -9721,15 +9995,15 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               {qcReceipt ? (
                 <div className="p-5 sm:p-6 space-y-4 overflow-y-auto flex-1">
                   <div className="text-center py-1">
-                    <div className="w-16 h-16 mx-auto rounded-full bg-emerald-100 flex items-center justify-center">
-                      <CheckCircle2 size={36} className="text-emerald-600" />
+                    <div className="w-16 h-16 mx-auto rounded-full bg-amber-100 flex items-center justify-center">
+                      <CheckCircle2 size={36} className="text-amber-600" />
                     </div>
                     <h3 className="mt-3 text-lg font-black uppercase tracking-tight text-slate-900">Fee Collected ✓</h3>
                     <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">Receipt #{qcReceipt.receiptId} • {qcReceipt.date}</p>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2">
                     <div className="flex justify-between text-xs font-bold text-slate-600"><span className="uppercase tracking-widest text-slate-400">Student</span><span className="font-black text-slate-900">{qcReceipt.studentName}</span></div>
-                    <div className="flex justify-between text-xs font-bold text-slate-600"><span className="uppercase tracking-widest text-slate-400">Total Collected</span><span className="font-black text-emerald-700">PKR {qcReceipt.total.toLocaleString()}</span></div>
+                    <div className="flex justify-between text-xs font-bold text-slate-600"><span className="uppercase tracking-widest text-slate-400">Total Collected</span><span className="font-black text-amber-700">PKR {qcReceipt.total.toLocaleString()}</span></div>
                     {qcReceipt.months && <div className="flex justify-between text-xs font-bold text-slate-600"><span className="uppercase tracking-widest text-slate-400">Months</span><span className="font-black text-slate-900 text-right">{qcReceipt.months}</span></div>}
                     {qcReceipt.collected !== '—' && <div className="flex justify-between text-xs font-bold text-slate-600"><span className="uppercase tracking-widest text-slate-400">Categories</span><span className="font-black text-slate-900 text-right">{qcReceipt.collected}</span></div>}
                     {qcReceipt.charged && <div className="flex justify-between text-xs font-bold text-slate-600"><span className="uppercase tracking-widest text-slate-400">Charged (Dues)</span><span className="font-black text-amber-600 text-right">{qcReceipt.charged}</span></div>}
@@ -9741,13 +10015,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         const st = students.find(s => String(s.id) === String(quickCollectStudentId));
                         if (st) handleSendFeeNotification(st, 'payment', qcReceipt.total, qcReceipt.collected);
                       }}
-                      className="py-3.5 bg-emerald-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-emerald-700 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                      className="py-3.5 bg-amber-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-amber-700 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Send size={14} /> WhatsApp Send
                     </button>
                     <button
                       onClick={() => { setQcReceipt(null); setQuickCollectStudentId(''); setQuickCollectAmount(''); setCollectDuesList({}); setQcSearch(''); }}
-                      className="py-3.5 bg-indigo-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-indigo-700 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                      className="py-3.5 bg-teal-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-teal-700 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Plus size={14} /> New Student
                     </button>
@@ -9774,10 +10048,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       const fSt = feeStudents.find(fs => String(fs.id) === String(st.id));
                       const dCount = (fSt?.dues || []).filter(d => d.status !== 'waived' && getDueRemaining(d) > 0).length;
                       return (
-                        <div className="w-full p-3 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center justify-between gap-3">
+                        <div className="w-full p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <p className="text-sm font-black text-slate-900 truncate">{st.name} <span className="text-[10px] font-bold text-slate-400">· Roll #{st.rollNumber || 'N/A'}</span></p>
-                            <p className={`text-[10px] font-black uppercase tracking-wider ${dCount > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>{dCount > 0 ? `${dCount} dues pending` : 'No pending dues ✓'}</p>
+                            <p className={`text-[10px] font-black uppercase tracking-wider ${dCount > 0 ? 'text-amber-600' : 'text-amber-600'}`}>{dCount > 0 ? `${dCount} dues pending` : 'No pending dues ✓'}</p>
                           </div>
                           <button
                             onClick={() => { setQuickCollectStudentId(''); setCollectDuesList({}); setQcSearch(''); setQuickCollectFeeType('School NSB Fee'); }}
@@ -9796,7 +10070,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           value={qcSearch}
                           onChange={(e) => setQcSearch(e.target.value)}
                           placeholder="Type name or roll #..."
-                          className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-800 outline-none focus:border-emerald-600"
+                          className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-800 outline-none focus:border-amber-600"
                         />
                         {q !== '' && (
                           <div className="mt-1.5 bg-white border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100 max-h-56 overflow-y-auto custom-scrollbar shadow-lg">
@@ -9809,13 +10083,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <button
                                   key={s.id}
                                   onClick={() => { setQuickCollectStudentId(s.id); if (s.baseFee) setQuickCollectAmount(String(s.baseFee)); setQuickCollectFeeType('School NSB Fee'); setQcSearch(''); }}
-                                  className="w-full px-3 py-2.5 flex items-center justify-between gap-2 hover:bg-emerald-50 transition-colors cursor-pointer text-left"
+                                  className="w-full px-3 py-2.5 flex items-center justify-between gap-2 hover:bg-amber-50 transition-colors cursor-pointer text-left"
                                 >
                                   <span className="text-xs font-black text-slate-800 truncate">{s.name} <span className="text-[10px] font-bold text-slate-400">· Roll #{s.rollNumber || 'N/A'}</span></span>
                                   {dCount > 0 ? (
                                     <span className="text-[9px] font-black uppercase bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-md shrink-0">{dCount} dues</span>
                                   ) : (
-                                    <span className="text-[9px] font-black uppercase bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded-md shrink-0">Clear ✓</span>
+                                    <span className="text-[9px] font-black uppercase bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded-md shrink-0">Clear ✓</span>
                                   )}
                                 </button>
                               );
@@ -9837,13 +10111,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   if (grand <= 0) return null;
                   return (
                     <div className="grid grid-cols-2 gap-2">
-                      <div className={`p-3 rounded-xl border text-center ${feePending > 0 ? 'bg-rose-50 border-rose-200' : 'bg-emerald-50 border-emerald-100'}`}>
+                      <div className={`p-3 rounded-xl border text-center ${feePending > 0 ? 'bg-rose-50 border-rose-200' : 'bg-amber-50 border-amber-100'}`}>
                         <span className="block text-[9px] font-black uppercase tracking-widest text-slate-400">School NSB Fee Pending</span>
-                        <span className={`block text-sm font-black ${feePending > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{feePending > 0 ? `PKR ${feePending.toLocaleString()}` : 'Clear ✓'}</span>
+                        <span className={`block text-sm font-black ${feePending > 0 ? 'text-rose-600' : 'text-amber-600'}`}>{feePending > 0 ? `PKR ${feePending.toLocaleString()}` : 'Clear ✓'}</span>
                       </div>
-                      <div className={`p-3 rounded-xl border text-center ${duesPending > 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-100'}`}>
+                      <div className={`p-3 rounded-xl border text-center ${duesPending > 0 ? 'bg-amber-50 border-amber-200' : 'bg-amber-50 border-amber-100'}`}>
                         <span className="block text-[9px] font-black uppercase tracking-widest text-slate-400">Dues / Funds Pending</span>
-                        <span className={`block text-sm font-black ${duesPending > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>{duesPending > 0 ? `PKR ${duesPending.toLocaleString()}` : 'Clear ✓'}</span>
+                        <span className={`block text-sm font-black ${duesPending > 0 ? 'text-amber-600' : 'text-amber-600'}`}>{duesPending > 0 ? `PKR ${duesPending.toLocaleString()}` : 'Clear ✓'}</span>
                       </div>
                     </div>
                   );
@@ -9887,9 +10161,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                 <button
                                   key={d.id}
                                   onClick={() => setCollectDuesList(prev => ({ ...prev, [d.id]: !prev[d.id] }))}
-                                  className={`w-full text-left p-2.5 rounded-lg border transition-all cursor-pointer flex items-center gap-2.5 ${isSel ? 'bg-emerald-50 border-emerald-400 ring-1 ring-emerald-300' : 'bg-white border-slate-200 hover:border-amber-400'}`}
+                                  className={`w-full text-left p-2.5 rounded-lg border transition-all cursor-pointer flex items-center gap-2.5 ${isSel ? 'bg-amber-50 border-amber-400 ring-1 ring-amber-300' : 'bg-white border-slate-200 hover:border-amber-400'}`}
                                 >
-                                  <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 border-2 transition-colors ${isSel ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-300 bg-white text-transparent'}`}>
+                                  <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 border-2 transition-colors ${isSel ? 'bg-amber-600 border-amber-600 text-white' : 'border-slate-300 bg-white text-transparent'}`}>
                                     <CheckCircle2 size={13} />
                                   </span>
                                   <span className="min-w-0 flex-1">
@@ -9899,7 +10173,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                                     </span>
                                     <span className="block text-[10px] font-bold text-slate-400 mt-0.5">
                                       Total: PKR {Number(d.amount || 0).toLocaleString()}
-                                      {pd > 0 && <> • Paid: <span className="text-emerald-600 font-black">PKR {pd.toLocaleString()}</span></>}
+                                      {pd > 0 && <> • Paid: <span className="text-amber-600 font-black">PKR {pd.toLocaleString()}</span></>}
                                       {' '}• Remaining: <span className="text-rose-600 font-black">PKR {rem.toLocaleString()}</span>
                                     </span>
                                   </span>
@@ -9908,7 +10182,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             })}
                           </div>
                           {selIds.length > 0 && (
-                            <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white">
+                            <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-600 text-white">
                               <span className="text-[9px] font-black uppercase tracking-widest">{selIds.length} Selected — Collect Total:</span>
                               <span className="text-xs font-black">PKR {selTotal.toLocaleString()}</span>
                             </div>
@@ -9919,11 +10193,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   })()}
 
                       {/* Monthly School NSB Fee — REQUIRED (always visible) */}
-                      <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-100">
-                        <span className="text-[10px] font-black text-indigo-700 uppercase tracking-widest flex items-center gap-1.5">
+                      <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-teal-50 border border-teal-100">
+                        <span className="text-[10px] font-black text-teal-700 uppercase tracking-widest flex items-center gap-1.5">
                           <CreditCard size={12} /> Monthly School NSB Fee — Required
                         </span>
-                        <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Auto-Spread ON</span>
+                        <span className="text-[9px] font-black text-teal-400 uppercase tracking-widest">Auto-Spread ON</span>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   {/* Fee Month — current month default, dynamic list (12 past + 6 future) */}
@@ -9934,7 +10208,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <select
                       value={quickCollectMonth}
                       onChange={(e) => setQuickCollectMonth(e.target.value)}
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-800 outline-none focus:border-emerald-600 uppercase"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-800 outline-none focus:border-amber-600 uppercase"
                     >
                       {(() => {
                         const now = new Date();
@@ -9963,7 +10237,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       value={quickCollectAmount}
                       onChange={(e) => setQuickCollectAmount(e.target.value)}
                       placeholder="Amount in PKR"
-                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-base font-black text-slate-900 outline-none focus:border-emerald-600"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-base font-black text-slate-900 outline-none focus:border-amber-600"
                     />
                     {(() => {
                       const st = students.find(s => String(s.id) === String(quickCollectStudentId));
@@ -9971,7 +10245,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       if (!(base > 0)) return null;
                       return (
                         <div className="flex gap-1.5 mt-1.5">
-                          <button onClick={() => setQuickCollectAmount(String(base))} className="px-2 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-black rounded-lg hover:bg-emerald-100 cursor-pointer">PKR {base.toLocaleString()}</button>
+                          <button onClick={() => setQuickCollectAmount(String(base))} className="px-2 py-1 bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-black rounded-lg hover:bg-amber-100 cursor-pointer">PKR {base.toLocaleString()}</button>
                           <button onClick={() => setQuickCollectAmount(String(base * 2))} className="px-2 py-1 bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-black rounded-lg hover:bg-slate-100 cursor-pointer">PKR {(base * 2).toLocaleString()} (2 Months)</button>
                         </div>
                       );
@@ -9990,14 +10264,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   const allocated = allocs.reduce((s, a) => s + a.amount, 0);
                   const leftover = amt - allocated;
                   return (
-                    <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-3 space-y-1.5">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700 flex items-center gap-1.5">
+                    <div className="bg-amber-50/70 border border-amber-100 rounded-xl p-3 space-y-1.5">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 flex items-center gap-1.5">
                         <CheckCircle2 size={12} /> Auto-Spread ON — one amount, automatically split across pending months
                       </p>
                       {allocs.length > 0 ? (
                         <div className="flex flex-wrap gap-1.5">
                           {allocs.map(a => (
-                            <span key={`${a.month}-${a.year}`} className="px-2 py-0.5 bg-white border border-emerald-200 text-emerald-700 rounded-lg text-[10px] font-black">
+                            <span key={`${a.month}-${a.year}`} className="px-2 py-0.5 bg-white border border-amber-200 text-amber-700 rounded-lg text-[10px] font-black">
                               {a.month} {a.year} · PKR {a.amount.toLocaleString()}
                             </span>
                           ))}
@@ -10021,7 +10295,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <label className="text-xs font-black uppercase tracking-widest text-slate-500 block mb-1">
                     Fee Category
                   </label>
-                  <div className="w-full p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm font-black text-emerald-700 uppercase tracking-wide flex items-center gap-2">
+                  <div className="w-full p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm font-black text-amber-700 uppercase tracking-wide flex items-center gap-2">
                     <CheckCircle2 size={14} className="shrink-0" /> School NSB Fee
                   </div>
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
@@ -10044,7 +10318,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <button
                         key={m.v}
                         onClick={() => setQuickCollectPaymentMethod(m.v)}
-                        className={`py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wide border transition-all cursor-pointer ${quickCollectPaymentMethod === m.v ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-emerald-400'}`}
+                        className={`py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wide border transition-all cursor-pointer ${quickCollectPaymentMethod === m.v ? 'bg-amber-600 border-amber-600 text-white shadow-md' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-amber-400'}`}
                       >
                         {m.l}
                       </button>
@@ -10066,8 +10340,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   const total = mainAmt + duesTotal;
                   if (total <= 0) return null;
                   return (
-                    <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3 space-y-1.5">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700 flex items-center gap-1.5">
+                    <div className="bg-teal-50/70 border border-teal-200 rounded-xl p-3 space-y-1.5">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-teal-700 flex items-center gap-1.5">
                         <CheckCircle2 size={12} /> Receipt Preview — What Will Be Collected
                       </p>
                       {mainAmt > 0 && (
@@ -10084,9 +10358,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           </div>
                         );
                       })}
-                      <div className="border-t border-indigo-200 pt-1.5 flex justify-between text-xs font-black">
-                        <span className="uppercase tracking-widest text-indigo-700">Total</span>
-                        <span className="text-indigo-800">PKR {total.toLocaleString()}</span>
+                      <div className="border-t border-teal-200 pt-1.5 flex justify-between text-xs font-black">
+                        <span className="uppercase tracking-widest text-teal-700">Total</span>
+                        <span className="text-teal-800">PKR {total.toLocaleString()}</span>
                       </div>
                       <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{quickCollectPaymentMethod} • {new Date().toLocaleDateString()}</p>
                     </div>
@@ -10103,7 +10377,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     value={quickCollectNotes}
                     onChange={(e) => setQuickCollectNotes(e.target.value)}
                     placeholder="e.g. Paid in full with discount or roll balance"
-                    className="w-full p-2.5 sm:p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-emerald-600"
+                    className="w-full p-2.5 sm:p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-amber-600"
                   />
                 </div>
               </div>
@@ -10118,7 +10392,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   const grand = (Number(quickCollectAmount) || 0) + duesTotal;
                   return (
                     <span className="text-[10px] sm:text-xs font-black uppercase tracking-widest text-slate-500">
-                      Total: <span className="text-emerald-700 text-sm">PKR {grand.toLocaleString()}</span>
+                      Total: <span className="text-amber-700 text-sm">PKR {grand.toLocaleString()}</span>
                     </span>
                   );
                 })()}
@@ -10130,7 +10404,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   </button>
                   <button
                     onClick={handleRecordQuickFee}
-                    className="px-5 sm:px-7 py-3.5 bg-emerald-600 text-white font-black text-xs sm:text-sm uppercase tracking-widest hover:bg-emerald-700 rounded-xl transition-all shadow-lg active:scale-95 flex items-center gap-2 cursor-pointer"
+                    className="px-5 sm:px-7 py-3.5 bg-amber-600 text-white font-black text-xs sm:text-sm uppercase tracking-widest hover:bg-amber-700 rounded-xl transition-all shadow-lg active:scale-95 flex items-center gap-2 cursor-pointer"
                   >
                     <CheckCircle2 size={18} /> Collect & Receipt
                   </button>
@@ -10153,14 +10427,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-slate-200"
             >
-              <div className="bg-emerald-600 p-5 sm:p-6 text-white flex justify-between items-center">
+              <div className="bg-amber-600 p-5 sm:p-6 text-white flex justify-between items-center">
                 <div className="flex items-center gap-3">
                   <div className="w-11 h-11 rounded-xl bg-white/20 flex items-center justify-center">
                     <CheckCircle2 size={22} />
                   </div>
                   <div>
                     <h2 className="text-base sm:text-lg font-black uppercase tracking-tight">Collect Due Payment</h2>
-                    <p className="text-[10px] uppercase font-bold text-emerald-100">
+                    <p className="text-[10px] uppercase font-bold text-amber-100">
                       {students.find(s => String(s.id) === String(collectDuesModal.studentId))?.name || 'Student'} • {collectDuesModal.desc}
                     </p>
                   </div>
@@ -10174,16 +10448,16 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               </div>
 
               <div className="p-5 sm:p-6 space-y-4">
-                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
                   <div className="flex justify-between items-center">
-                    <span className="text-xs font-black text-emerald-600 uppercase tracking-widest">Due Total</span>
-                    <span className="text-2xl font-black text-emerald-700">PKR {collectDuesModal.amount.toLocaleString()}</span>
+                    <span className="text-xs font-black text-amber-600 uppercase tracking-widest">Due Total</span>
+                    <span className="text-2xl font-black text-amber-700">PKR {collectDuesModal.amount.toLocaleString()}</span>
                   </div>
-                  <div className="mt-2 text-xs font-bold text-emerald-500">
+                  <div className="mt-2 text-xs font-bold text-amber-500">
                     {collectDuesModal.desc} • {collectDuesModal.month} {collectDuesModal.year}
                   </div>
                   {collectDuesModal.amount - collectDuesModal.remaining > 0 && (
-                    <div className="mt-2 text-xs font-black text-emerald-600">
+                    <div className="mt-2 text-xs font-black text-amber-600">
                       Already Paid: PKR {(collectDuesModal.amount - collectDuesModal.remaining).toLocaleString()} • Remaining: <span className="text-rose-600">PKR {collectDuesModal.remaining.toLocaleString()}</span>
                     </div>
                   )}
@@ -10196,11 +10470,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     value={collectDuesAmount}
                     onChange={(e) => setCollectDuesAmount(e.target.value)}
                     placeholder={`Max ${collectDuesModal.remaining.toLocaleString()}`}
-                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-amber-500"
                   />
                   <button
                     onClick={() => setCollectDuesAmount(String(collectDuesModal.remaining))}
-                    className="mt-1 text-[10px] font-black text-emerald-600 uppercase tracking-widest hover:underline cursor-pointer"
+                    className="mt-1 text-[10px] font-black text-amber-600 uppercase tracking-widest hover:underline cursor-pointer"
                   >
                     Collect Full Remaining (PKR {collectDuesModal.remaining.toLocaleString()})
                   </button>
@@ -10211,7 +10485,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   <select
                     value={collectDuesPaymentMethod}
                     onChange={(e) => setCollectDuesPaymentMethod(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500 appearance-none cursor-pointer"
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-amber-500 appearance-none cursor-pointer"
                   >
                     <option value="Cash">Cash</option>
                     <option value="Bank Transfer">Bank Transfer</option>
@@ -10227,7 +10501,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     type="date"
                     value={new Date().toISOString().split('T')[0]}
                     onChange={() => {}}
-                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-amber-500"
                   />
                 </div>
 
@@ -10265,7 +10539,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       setCollectDuesAmount('');
                       toast.success(`Collected PKR ${toCollect.toLocaleString()} of "${collectDuesModal.desc}" from ${st?.name || 'student'} — ${fullyPaidNow ? 'DUE FULLY PAID ✓' : (collectDuesModal.remaining - toCollect).toLocaleString() + ' pending'}`);
                     }}
-                    className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"
+                    className="w-full py-4 bg-amber-600 hover:bg-amber-700 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2"
                   >
                     <CheckCircle2 size={16} /> Collect & Mark Paid
                   </button>
@@ -10330,7 +10604,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Mode</label>
                     <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl">
                       <button onClick={() => setClassDuesMode('charge')} className={`py-2 text-[9px] font-black uppercase tracking-widest rounded-lg transition-all cursor-pointer ${classDuesMode === 'charge' ? 'bg-amber-500 text-white shadow' : 'text-slate-500 hover:text-slate-700'}`}>Charge Only</button>
-                      <button onClick={() => setClassDuesMode('collect')} className={`py-2 text-[9px] font-black uppercase tracking-widest rounded-lg transition-all cursor-pointer ${classDuesMode === 'collect' ? 'bg-emerald-600 text-white shadow' : 'text-slate-500 hover:text-slate-700'}`}>Charge & Collect</button>
+                      <button onClick={() => setClassDuesMode('collect')} className={`py-2 text-[9px] font-black uppercase tracking-widest rounded-lg transition-all cursor-pointer ${classDuesMode === 'collect' ? 'bg-amber-600 text-white shadow' : 'text-slate-500 hover:text-slate-700'}`}>Charge & Collect</button>
                     </div>
                   </div>
                 </div>
@@ -10362,7 +10636,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       Students ({classStudentsForDues.length}) — kisi ek, kuch ya sab ko select karein
                     </span>
                     <div className="flex gap-1.5">
-                      <button onClick={() => setClassDuesSelected(Object.fromEntries(classStudentsForDues.map(s => [String(s.id), true])))} className="px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[9px] font-black uppercase tracking-widest rounded-lg hover:bg-emerald-100 cursor-pointer">Select All</button>
+                      <button onClick={() => setClassDuesSelected(Object.fromEntries(classStudentsForDues.map(s => [String(s.id), true])))} className="px-2.5 py-1 bg-amber-50 border border-amber-200 text-amber-700 text-[9px] font-black uppercase tracking-widest rounded-lg hover:bg-amber-100 cursor-pointer">Select All</button>
                       <button onClick={() => setClassDuesSelected({})} className="px-2.5 py-1 bg-slate-50 border border-slate-200 text-slate-500 text-[9px] font-black uppercase tracking-widest rounded-lg hover:bg-slate-100 cursor-pointer">Clear All</button>
                     </div>
                   </div>
@@ -10375,10 +10649,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <button
                           key={String(s.id)}
                           onClick={() => setClassDuesSelected(prev => ({ ...prev, [String(s.id)]: !prev[String(s.id)] }))}
-                          className={`w-full text-left px-3 py-2 rounded-xl border flex items-center justify-between gap-2 transition-all cursor-pointer ${sel ? 'bg-emerald-50 border-emerald-400' : 'bg-white border-slate-200 hover:border-slate-300'}`}
+                          className={`w-full text-left px-3 py-2 rounded-xl border flex items-center justify-between gap-2 transition-all cursor-pointer ${sel ? 'bg-amber-50 border-amber-400' : 'bg-white border-slate-200 hover:border-slate-300'}`}
                         >
                           <span className="flex items-center gap-2 min-w-0">
-                            <span className={`w-4 h-4 rounded-md border-2 flex items-center justify-center shrink-0 ${sel ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'}`}>
+                            <span className={`w-4 h-4 rounded-md border-2 flex items-center justify-center shrink-0 ${sel ? 'bg-amber-500 border-amber-500' : 'border-slate-300'}`}>
                               {sel && <CheckCircle2 size={11} className="text-white" />}
                             </span>
                             <span className="min-w-0">
@@ -10386,7 +10660,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                               <span className="block text-[9px] font-bold text-slate-400 uppercase">{getClassName(String(s.classId))}</span>
                             </span>
                           </span>
-                          <span className={`text-[9px] font-black uppercase tracking-widest shrink-0 ${pend > 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                          <span className={`text-[9px] font-black uppercase tracking-widest shrink-0 ${pend > 0 ? 'text-rose-500' : 'text-amber-500'}`}>
                             {pend > 0 ? `Pending: ${pend.toLocaleString()}` : 'Clear ✓'}
                           </span>
                         </button>
@@ -10400,15 +10674,15 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
 
                 {/* Collect mode extras */}
                 {classDuesMode === 'collect' && (
-                  <div className="p-3 rounded-xl bg-emerald-50/60 border border-emerald-100 space-y-2">
-                    <p className="text-[10px] font-black text-emerald-700 uppercase tracking-widest flex items-center gap-1.5"><Banknote size={12} /> Foran Wasooli (Collect)</p>
+                  <div className="p-3 rounded-xl bg-amber-50/60 border border-amber-100 space-y-2">
+                    <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest flex items-center gap-1.5"><Banknote size={12} /> Foran Wasooli (Collect)</p>
                     <div className="flex flex-col sm:flex-row gap-2">
                       <input
                         type="number" min="0" max={Number(classDuesAmount) || undefined}
                         value={classDuesCollectAmount}
                         onChange={(e) => setClassDuesCollectAmount(e.target.value)}
                         placeholder={`Collect amount (default: full PKR ${Number(classDuesAmount || 0).toLocaleString()})`}
-                        className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black focus:outline-none focus:border-emerald-500"
+                        className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-black focus:outline-none focus:border-amber-500"
                       />
                       <select value={classDuesPaymentMethod} onChange={(e) => setClassDuesPaymentMethod(e.target.value)} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-700 cursor-pointer">
                         {['Cash', 'Bank Transfer', 'JazzCash', 'EasyPaisa', 'Online', 'Cheque'].map(m => <option key={m} value={m}>{m}</option>)}
@@ -10435,7 +10709,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 </div>
                 <div className="flex gap-2 shrink-0">
                   <button onClick={() => setShowClassDuesModal(false)} className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-600 text-[10px] font-black uppercase tracking-widest rounded-xl cursor-pointer">Cancel</button>
-                  <button onClick={handleSubmitClassDues} className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl flex items-center gap-1.5 cursor-pointer">
+                  <button onClick={handleSubmitClassDues} className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl flex items-center gap-1.5 cursor-pointer">
                     <CheckCircle2 size={14} /> {classDuesMode === 'charge' ? 'Charge Dues' : 'Charge & Collect'}
                   </button>
                 </div>
@@ -10456,14 +10730,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-slate-200 max-h-[92vh] flex flex-col"
             >
-              <div className="bg-indigo-600 p-5 sm:p-6 text-white flex justify-between items-center shrink-0">
+              <div className="bg-teal-600 p-5 sm:p-6 text-white flex justify-between items-center shrink-0">
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="w-11 h-11 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
                     <Receipt size={22} />
                   </div>
                   <div className="min-w-0">
                     <h2 className="text-base sm:text-lg font-black uppercase tracking-tight truncate">Fee Record Actions</h2>
-                    <p className="text-[10px] uppercase font-bold text-indigo-100 truncate">
+                    <p className="text-[10px] uppercase font-bold text-teal-100 truncate">
                       {feeEditForm.studentName} • #{String(feeActionModal.fee.id).slice(-6)}
                     </p>
                   </div>
@@ -10483,7 +10757,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2.5">
                       <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
                         <span>Category</span>
-                        <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100 uppercase font-black">{feeActionModal.fee.feeType || 'School Fee'}</span>
+                        <span className="px-2 py-0.5 bg-teal-50 text-teal-700 rounded-md border border-teal-100 uppercase font-black">{feeActionModal.fee.feeType || 'School Fee'}</span>
                       </div>
                       <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
                         <span>Amount</span>
@@ -10512,7 +10786,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="flex flex-col gap-3">
                       <button
                         onClick={() => setShowFeeEditForm(true)}
-                        className="w-full py-4 bg-indigo-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 cursor-pointer"
+                        className="w-full py-4 bg-teal-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 cursor-pointer"
                       >
                         <Edit2 size={16} /> Edit Record
                       </button>
@@ -10532,7 +10806,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         <select
                           value={feeEditForm.feeType}
                           onChange={(e) => setFeeEditForm({ ...feeEditForm, feeType: e.target.value })}
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500 appearance-none cursor-pointer"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500 appearance-none cursor-pointer"
                         >
                           <option value="School Fee">School Fee</option>
                           <option value="Tuition Fee">Tuition Fee</option>
@@ -10548,7 +10822,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             type="text"
                             value={feeEditForm.month}
                             onChange={(e) => setFeeEditForm({ ...feeEditForm, month: e.target.value })}
-                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500"
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500"
                           />
                         </div>
                         <div className="space-y-1.5">
@@ -10557,7 +10831,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             type="date"
                             value={feeEditForm.paidDate}
                             onChange={(e) => setFeeEditForm({ ...feeEditForm, paidDate: e.target.value })}
-                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500"
+                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500"
                           />
                         </div>
                       </div>
@@ -10567,7 +10841,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           type="number"
                           value={feeEditForm.amount}
                           onChange={(e) => setFeeEditForm({ ...feeEditForm, amount: e.target.value })}
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xl font-black text-slate-900 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xl font-black text-slate-900 focus:outline-none focus:border-teal-500"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -10576,7 +10850,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           type="text"
                           value={feeEditForm.paymentMethod}
                           onChange={(e) => setFeeEditForm({ ...feeEditForm, paymentMethod: e.target.value })}
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -10585,7 +10859,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           rows={2}
                           value={feeEditForm.description}
                           onChange={(e) => setFeeEditForm({ ...feeEditForm, description: e.target.value })}
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-indigo-500 resize-none"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-teal-500 resize-none"
                         />
                       </div>
                     </div>
@@ -10593,7 +10867,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                     <div className="flex flex-col gap-3 pt-1">
                       <button
                         onClick={saveFeeRecordEdit}
-                        className="w-full py-4 bg-indigo-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 cursor-pointer"
+                        className="w-full py-4 bg-teal-600 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 flex justify-center items-center gap-2 cursor-pointer"
                       >
                         <Save size={16} /> Save Changes
                       </button>
@@ -10627,12 +10901,12 @@ function FeeReceiptCard({ fee, student, onAction, onDelete }: {
     <div
       {...lp}
       onClick={onAction}
-      className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col gap-3 group/receipt hover:border-emerald-200 transition-colors select-none cursor-pointer touch-manipulation active:scale-[0.99]"
+      className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col gap-3 group/receipt hover:border-amber-200 transition-colors select-none cursor-pointer touch-manipulation active:scale-[0.99]"
       style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation' }}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="px-2 py-1 bg-white border border-slate-200 text-[10px] font-black text-slate-400 rounded-lg font-mono truncate">#{String(fee.id).slice(-6)}</span>
-        <span className="text-xs font-black text-emerald-700 whitespace-nowrap">PKR {Number(fee.amount).toLocaleString()}</span>
+        <span className="text-xs font-black text-amber-700 whitespace-nowrap">PKR {Number(fee.amount).toLocaleString()}</span>
       </div>
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase">
@@ -10641,7 +10915,7 @@ function FeeReceiptCard({ fee, student, onAction, onDelete }: {
         </div>
         <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase">
           <span>Category</span>
-          <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100 uppercase">{fee.feeType || 'School Fee'}</span>
+          <span className="px-1.5 py-0.5 bg-teal-50 text-teal-700 rounded-md border border-teal-100 uppercase">{fee.feeType || 'School Fee'}</span>
         </div>
         <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase">
           <span>Paid On</span>
@@ -10655,7 +10929,7 @@ function FeeReceiptCard({ fee, student, onAction, onDelete }: {
       <div className="flex items-center gap-2 pt-2 border-t border-slate-200/60 mt-1" onPointerDown={(e) => e.stopPropagation()}>
         <button
           onClick={(e) => { e.stopPropagation(); onAction(); }}
-          className="flex-1 py-1.5 bg-white border border-slate-200 text-emerald-600 text-[10px] font-black uppercase tracking-wider rounded-lg flex items-center justify-center gap-1.5 hover:bg-emerald-50 transition-colors cursor-pointer"
+          className="flex-1 py-1.5 bg-white border border-slate-200 text-amber-600 text-[10px] font-black uppercase tracking-wider rounded-lg flex items-center justify-center gap-1.5 hover:bg-amber-50 transition-colors cursor-pointer"
           title="Edit / Delete (hold or tap)"
         >
           <Edit2 size={12} /> Edit
@@ -10773,13 +11047,13 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
           <button
             onClick={() => onYearChange?.(Number(year) - 1)}
             title="Previous year"
-            className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-indigo-400 hover:text-indigo-500 transition-colors cursor-pointer"
+            className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-teal-400 hover:text-teal-500 transition-colors cursor-pointer"
           >‹</button>
-          <span className="text-xs font-black text-indigo-600 uppercase">{year}</span>
+          <span className="text-xs font-black text-teal-600 uppercase">{year}</span>
           <button
             onClick={() => onYearChange?.(Number(year) + 1)}
             title="Next year"
-            className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-indigo-400 hover:text-indigo-500 transition-colors cursor-pointer"
+            className="px-1.5 py-0.5 bg-white border border-slate-200 rounded-md text-xs font-black text-slate-500 hover:border-teal-400 hover:text-teal-500 transition-colors cursor-pointer"
           >›</button>
           <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
             Month-wise Fee Breakdown{Number(year) === nowYear && enrollIdx >= 0 ? ` · From ${MONTHS[enrollIdx]}` : ' · Full Year'}
@@ -10790,13 +11064,13 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
 
       {/* SUMMARY — month cards se upar: Base, Paid, Remaining (all months combined), Dues */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
-        <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100">
-          <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">Base Fee ({monthStats.length} months)</span>
-          <span className="block text-sm font-black text-indigo-700">PKR {totalBaseAll.toLocaleString()}</span>
+        <div className="p-2.5 rounded-xl bg-teal-50/70 border border-teal-100">
+          <span className="block text-[9px] font-black text-teal-400 uppercase tracking-widest">Base Fee ({monthStats.length} months)</span>
+          <span className="block text-sm font-black text-teal-700">PKR {totalBaseAll.toLocaleString()}</span>
         </div>
-        <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-100">
-          <span className="block text-[9px] font-black text-emerald-500 uppercase tracking-widest">Total Paid</span>
-          <span className="block text-sm font-black text-emerald-700">PKR {totals.paid.toLocaleString()}</span>
+        <div className="p-2.5 rounded-xl bg-amber-50/70 border border-amber-100">
+          <span className="block text-[9px] font-black text-amber-500 uppercase tracking-widest">Total Paid</span>
+          <span className="block text-sm font-black text-amber-700">PKR {totals.paid.toLocaleString()}</span>
         </div>
         <div className="p-2.5 rounded-xl bg-rose-50/70 border border-rose-100">
           <span className="block text-[9px] font-black text-rose-400 uppercase tracking-widest">Remaining (All Months)</span>
@@ -10826,21 +11100,21 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
             <div
               onClick={() => onSelectMonth?.(isSelected ? null : m)}
               title={`Click to ${isSelected ? 'hide' : 'view'} ${m} ${year} history`}
-              className={`p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition-all select-none active:scale-[0.98] ${isClear ? 'bg-emerald-50/60 border-emerald-100' : totalPaid > 0 ? 'bg-amber-50/60 border-amber-100' : 'bg-slate-50 border-slate-100'} ${isSelected ? 'ring-2 ring-indigo-400 border-indigo-300 shadow-md' : 'hover:border-slate-300'}`}
+              className={`p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition-all select-none active:scale-[0.98] ${isClear ? 'bg-amber-50/60 border-amber-100' : totalPaid > 0 ? 'bg-amber-50/60 border-amber-100' : 'bg-slate-50 border-slate-100'} ${isSelected ? 'ring-2 ring-teal-400 border-teal-300 shadow-md' : 'hover:border-slate-300'}`}
             >
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black text-slate-700 uppercase">{m}</span>
                 <span className="flex items-center gap-1">
-                  {isClear && <CheckCircle2 size={11} className="text-emerald-600" />}
-                  <ChevronDown size={11} className={`text-slate-300 transition-transform ${isSelected ? 'rotate-180 text-indigo-400' : ''}`} />
+                  {isClear && <CheckCircle2 size={11} className="text-amber-600" />}
+                  <ChevronDown size={11} className={`text-slate-300 transition-transform ${isSelected ? 'rotate-180 text-teal-400' : ''}`} />
                 </span>
               </div>
               <div className="text-[9px] font-bold text-slate-400 uppercase leading-tight">
-                <span className="block">Paid: {totalPaid > 0 ? <span className="text-emerald-700 font-black">PKR {totalPaid.toLocaleString()}</span> : <span className="text-slate-400">PKR 0</span>}</span>
+                <span className="block">Paid: {totalPaid > 0 ? <span className="text-amber-700 font-black">PKR {totalPaid.toLocaleString()}</span> : <span className="text-slate-400">PKR 0</span>}</span>
                 {totalRemaining > 0 ? (
                   <span className="block">Remaining: <span className="text-rose-600 font-black">PKR {totalRemaining.toLocaleString()}</span></span>
                 ) : (
-                  <span className="block font-black text-emerald-600">Clear</span>
+                  <span className="block font-black text-amber-600">Clear</span>
                 )}
                 {/* Dues — ASLI fee-type name ke saath (e.g. Paper Fund, Exam Fee) */}
                 {Array.from(pendingByType.entries()).map(([t, amt]) => (
@@ -10854,7 +11128,7 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
               <div className="flex items-center gap-1.5 pt-1" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => onCollect(m, totalRemaining)}
-                  className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[9px] font-black uppercase tracking-wide rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                  className="flex-1 py-1 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[9px] font-black uppercase tracking-wide rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
                   title={`Collect fee for ${m} ${year}`}
                 >
                   <Plus size={9} /> Collect

@@ -3,6 +3,35 @@
 ## Overview
 A comprehensive school management PWA built with React 19, TypeScript, Vite, Supabase (PostgreSQL), and Tailwind CSS. Features role-based portals for Principal, Coordinator, Teacher, and Student with real-time cross-device synchronization.
 
+## Demos & Modes
+
+### Demo Mode (default)
+- `.env` → `VITE_DATA_MODE=demo` set hai
+- App **100% local** chalti hai (browser `localStorage`); Supabase client initialized hota hai magar **koi network request nahi** hoti (`src/lib/supabaseSync.ts` mein har function gated hai)
+- Neon (backup/migration) scripts hata diye gaye hain; `@neondatabase/serverless` + `pg` deps remove
+- **Nayi API/backend jab mile**: `.env` mein `VITE_DATA_MODE` hatana ya `live` karna + `src/supabase.ts` mein endpoint update karna — baqi sync layer pehle se tayyar hai
+
+### Teacher Attendance (GPS) — "My Attendance"
+- Teacher portal mein `My Attendance` tab (sidebar)
+- **Check-In** = browser location + Haversine distance → school radius ke andar ho to hi hota hai
+- "Demo GPS (School Location)" checkbox — jab device GPS na mile demo ke liye
+- `src/lib/geoUtils.ts` (distance) + `src/lib/payEngine.ts` (hisab)
+
+### Teacher Pay — "My Pay" & Principal "Teacher Pay"
+- Har teacher ka monthly hisab: Base + (Present × Bonus) + Allowances − (Late × Docking) − (Absent × Docking) − Fixed
+- Teacher: monthly payslip + print (PDF ke liye browser print)
+- Principal: salary config editor, monthly table, Mark Paid
+- Storage keys: `acadamis_teacher_attendance`, `acadamis_teacher_pay_configs`, `acadamis_teacher_pay_slips`, `acadamis_school_location`
+
+### Supabase Keep-Alive
+- `npm run keepalive` → ek ping (project ko pause hone se bachata hai)
+- `npm run keepalive:watch` → har 6 ghante auto-ping
+- Windows Task Scheduler setup `scripts/supabase-keepalive.cjs` header mein documented hai
+
+### Theme
+- Colors: Teal (`#0d9488`) primary + Amber (`#d97706`) accent + dark slate background
+- PWA manifest `theme_color: #0d9488`
+
 ---
 
 ## Architecture

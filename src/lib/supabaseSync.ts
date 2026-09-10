@@ -3,11 +3,17 @@
  *
  * Har collection ki apni table hai (id text pk, data jsonb, updated_at):
  *   students, teachers, classes, timetable, attendance, marks,
- *   fees, fee_data, coordinators, assignments, app_settings
+ *   fees, fee_data, coordinators, assignments, app_settings,
+ *   teacher_attendance, teacher_pay, school_location
  *
  * - sbQueueWrite('students', id, data)  → students table upsert
  * - loadCollectionFromSupabase('fees')  → fees table select
  * - subscribeRecords()                  → SARI tables par ek realtime channel
+ *
+ * DEMO MODE (VITE_DATA_MODE=demo):
+ *   Har function LOCAL passthrough hai — writes no-op, loads khali, realtime
+ *   off. App 100% browser localStorage par chalti hai. `.env` se flag hatane
+ *   par yeh layer wapas live ho jata hai (naye/updated API endpoint ke liye).
  *
  * Data Neon/Firestore se migrate karne ke liye:
  * scripts/migrate-neon-to-supabase.cjs (records + sari tables dono fill karta hai)
@@ -15,7 +21,7 @@
  * Cross-device sync WebSocket realtime (postgres_changes) se hota hai —
  * koi polling/heartbeat/quota nahi.
  */
-import { supabase } from '../supabase';
+import { supabase, isDemoMode } from '../supabase';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 let supabaseHealthy = true;
@@ -27,6 +33,7 @@ export const getSupabaseLastError = () => supabaseLastError;
 export const KNOWN_TABLES = [
   'students', 'teachers', 'classes', 'timetable', 'attendance',
   'marks', 'fees', 'fee_data', 'coordinators', 'assignments', 'app_settings',
+  'teacher_attendance', 'teacher_pay', 'school_location',
 ] as const;
 
 // --- Queued writes (batched upsert on conflict) ---
@@ -41,17 +48,20 @@ function scheduleFlush() {
 }
 
 export function sbQueueWrite(col: string, id: string, data: any) {
+  if (isDemoMode()) return; // demo = local storage only
   pendingSet.push({ col, id, data });
   scheduleFlush();
 }
 
 export function sbQueueDelete(col: string, id: string) {
+  if (isDemoMode()) return; // demo = local storage only
   pendingDel.push({ col, id });
   scheduleFlush();
 }
 
 /** Pending queue ko foran flush karta hai. Success = true. Fail par data re-queue hota hai. */
 export async function flushSupabase(): Promise<boolean> {
+  if (isDemoMode()) return true; // demo = no-op, hamesha "success"
   if (flushInFlight) return true;
   if (pendingSet.length === 0 && pendingDel.length === 0) return true;
   flushInFlight = true;
@@ -111,6 +121,7 @@ if (typeof window !== 'undefined') {
 
 /** Sari known tables load karke collection ke hisaab se group karta hai (App ka init path). */
 export async function loadAllFromSupabase(): Promise<Record<string, any[]>> {
+  if (isDemoMode()) return {}; // demo = local storage se data aata hai
   try {
     const out: Record<string, any[]> = {};
     await Promise.all(KNOWN_TABLES.map(async (table) => {
@@ -143,6 +154,7 @@ export async function loadAllFromSupabase(): Promise<Record<string, any[]>> {
 
 /** Kisi ek collection (= apni table) ka data load karo (null agar fail). */
 export async function loadCollectionFromSupabase(col: string): Promise<any[] | null> {
+  if (isDemoMode()) return []; // demo = local storage se data
   try {
     const { data, error } = await supabase
       .from(col)
@@ -169,6 +181,7 @@ export async function loadCollectionFromSupabase(col: string): Promise<any[] | n
  */
 let channelSeq = 0;
 export function subscribeRecords(onEvent: (payload: any) => void): () => void {
+  if (isDemoMode()) return () => {}; // demo = realtime off
   // Har call ka APNA channel — same naam par supabase-js channel reuse karta hai
   // aur pehli subscribe ke baad naye .on() callbacks par throw karta hai.
   const channel: RealtimeChannel = supabase.channel(`nsb1-school-${++channelSeq}`);

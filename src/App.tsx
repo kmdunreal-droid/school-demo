@@ -940,7 +940,7 @@ export default function App() {
 
   // --- RENDER ROUTING ENGINE ---
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 font-sans antialiased selection:bg-blue-500 selection:text-white transition-colors duration-200">
+    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 font-sans antialiased selection:bg-teal-500 selection:text-white transition-colors duration-200">
       <Toaster position="top-right" richColors />
 
       {/* Cloud sync health banner */}
@@ -969,7 +969,7 @@ export default function App() {
               className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl overflow-hidden border border-slate-200"
             >
               <div className="p-8 text-center space-y-6">
-                <div className="w-20 h-20 bg-indigo-600 text-white rounded-3xl mx-auto flex items-center justify-center shadow-xl shadow-indigo-500/20 rotate-6">
+                <div className="w-20 h-20 bg-teal-600 text-white rounded-3xl mx-auto flex items-center justify-center shadow-xl shadow-teal-500/20 rotate-6">
                   <Download size={40} strokeWidth={2.5} />
                 </div>
                 
@@ -983,7 +983,7 @@ export default function App() {
                 <div className="flex flex-col gap-3 pt-4">
                   <button 
                     onClick={handleInstallClick}
-                    className="w-full py-4 bg-indigo-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-lg active:scale-95"
+                    className="w-full py-4 bg-teal-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-teal-700 transition-all shadow-lg active:scale-95"
                   >
                     Install Now
                   </button>

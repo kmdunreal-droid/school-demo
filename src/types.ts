@@ -172,6 +172,65 @@ export interface UserSession {
   name: string;
 }
 
+// ============================================================
+// TEACHER SELF-ATTENDANCE (GPS verified check-in / check-out)
+// ============================================================
+export interface TeacherAttendance {
+  id: string;
+  teacherId: string;
+  date: string;            // YYYY-MM-DD
+  checkIn: string | null;  // ISO timestamp
+  checkOut: string | null; // ISO timestamp
+  status: 'present' | 'late' | 'absent' | 'leave';
+  lat?: number | null;
+  lng?: number | null;
+  distanceMeters?: number | null; // school se distance
+  locationVerified?: boolean;      // GPS check pass hua ya nahi
+  note?: string;
+}
+
+// ============================================================
+// TEACHER PAY — hisab-e-tankhwah
+// ============================================================
+export interface TeacherPayConfig {
+  teacherId: string;
+  baseSalary: number;            // monthly base
+  bonusPerPresentDay: number;    // per present day bonus
+  lateDeductionPerDay: number;   // har late day ka kaat
+  absentDeductionPerDay: number; // har absent day ka kaat
+  allowances: number;            // monthly fixed allowance
+  deductions: number;            // monthly fixed deduction
+}
+
+export interface TeacherPayslip {
+  teacherId: string;
+  year: number;
+  month: number; // 0-11
+  presentDays: number;
+  lateDays: number;
+  absentDays: number;
+  leaveDays: number;
+  baseSalary: number;
+  presentBonus: number;
+  lateDeduction: number;
+  absentDeduction: number;
+  allowances: number;
+  fixedDeductions: number;
+  netPay: number;
+  paid: boolean;
+  paidDate?: string | null;
+}
+
+// ============================================================
+// SCHOOL LOCATION — attendance GPS radius ke liye
+// ============================================================
+export interface SchoolLocation {
+  lat: number;
+  lng: number;
+  radiusMeters: number;
+  name: string;
+}
+
 export function getStudentPhoto(student?: { id?: string; name?: string; photo?: string } | null): string {
   if (student?.photo && student.photo.trim().length > 0) {
     return student.photo;

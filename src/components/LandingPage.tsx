@@ -53,7 +53,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
   };
 
   return (
-    <div className="bg-white text-slate-900 font-sans antialiased min-h-screen flex flex-col selection:bg-emerald-100 selection:text-emerald-900 overflow-x-hidden">
+    <div className="bg-white text-slate-900 font-sans antialiased min-h-screen flex flex-col selection:bg-amber-100 selection:text-amber-900 overflow-x-hidden">
       
       {/* ========== MODERN NAVIGATION ========== */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b border-slate-100 px-4 sm:px-6 md:px-12 py-3 sm:py-4 flex items-center justify-between">
@@ -72,7 +72,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
             <span className="font-black text-slate-950 text-lg sm:text-xl tracking-tighter uppercase leading-none">
               NSB1
             </span>
-            <span className="text-[10px] tracking-[0.4em] font-black text-emerald-600 uppercase">
+            <span className="text-[10px] tracking-[0.4em] font-black text-amber-600 uppercase">
               School
             </span>
           </div>
@@ -85,10 +85,10 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
               key={item}
               href={`#${item.toLowerCase()}`} 
               onClick={(e) => { e.preventDefault(); handleNavClick(item.toLowerCase()); }}
-              className="hover:text-emerald-600 transition-all relative group cursor-pointer"
+              className="hover:text-amber-600 transition-all relative group cursor-pointer"
             >
               {item}
-              <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-emerald-600 transition-all group-hover:w-full"></span>
+              <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-amber-600 transition-all group-hover:w-full"></span>
             </a>
           ))}
         </nav>
@@ -98,7 +98,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
             whileHover={{ scale: 1.02, translateY: -1 }}
             whileTap={{ scale: 0.98 }}
             onClick={onEnterPortal}
-            className="hidden sm:block py-3 px-6 md:px-8 bg-slate-950 text-white font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer shadow-xl shadow-slate-200 hover:bg-emerald-600 hover:shadow-emerald-200"
+            className="hidden sm:block py-3 px-6 md:px-8 bg-slate-950 text-white font-black text-[10px] uppercase tracking-widest transition-all cursor-pointer shadow-xl shadow-slate-200 hover:bg-amber-600 hover:shadow-amber-200"
           >
             Portal Login
           </motion.button>
@@ -128,14 +128,14 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 key={item}
                 href={`#${item.toLowerCase()}`}
                 onClick={(e) => { e.preventDefault(); handleNavClick(item.toLowerCase()); }}
-                className="block py-3 px-4 rounded-xl text-[11px] font-black text-slate-700 uppercase tracking-[0.25em] hover:bg-emerald-50 hover:text-emerald-700 transition-colors cursor-pointer"
+                className="block py-3 px-4 rounded-xl text-[11px] font-black text-slate-700 uppercase tracking-[0.25em] hover:bg-amber-50 hover:text-amber-700 transition-colors cursor-pointer"
               >
                 {item}
               </a>
             ))}
             <button
               onClick={() => { setMobileOpen(false); onEnterPortal(); }}
-              className="w-full py-4 mt-2 bg-slate-950 text-white font-black text-[11px] uppercase tracking-widest hover:bg-emerald-600 transition-colors cursor-pointer"
+              className="w-full py-4 mt-2 bg-slate-950 text-white font-black text-[11px] uppercase tracking-widest hover:bg-amber-600 transition-colors cursor-pointer"
             >
               Portal Login
             </button>
@@ -148,9 +148,9 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
         <section id="home" className="relative pt-10 sm:pt-14 md:pt-16 pb-14 md:pb-20 px-4 sm:px-6 md:px-12 overflow-hidden">
           {/* Refined Background Elements */}
           <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-full max-w-7xl -z-10 overflow-hidden pointer-events-none">
-            <div className="absolute top-[-20%] right-[-10%] w-[60%] h-[60%] bg-emerald-50/60 rounded-full blur-[120px]"></div>
+            <div className="absolute top-[-20%] right-[-10%] w-[60%] h-[60%] bg-amber-50/60 rounded-full blur-[120px]"></div>
             <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-slate-50 rounded-full blur-[100px]"></div>
-            <div className="absolute top-1/3 left-1/4 w-40 h-40 bg-emerald-100/40 rounded-full blur-3xl"></div>
+            <div className="absolute top-1/3 left-1/4 w-40 h-40 bg-amber-100/40 rounded-full blur-3xl"></div>
           </div>
 
           <div className="max-w-7xl mx-auto">
@@ -161,14 +161,14 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
                 className="space-y-8 md:space-y-10 text-center"
               >
-                <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-50 border border-emerald-100 rounded-full">
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                  <span className="text-[10px] font-black text-emerald-600 uppercase tracking-[0.2em]">Excellence Redefined</span>
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-100 rounded-full">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-[0.2em]">Excellence Redefined</span>
                 </div>
 
                 <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl font-black tracking-tighter leading-[0.95] text-slate-950 uppercase">
                   Shaping<br/>
-                  <span className="text-emerald-600">The Future</span><br/>
+                  <span className="text-amber-600">The Future</span><br/>
                   of Leaders.
                 </h1>
                 
@@ -181,7 +181,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                     whileHover={{ scale: 1.05, translateY: -2 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={onEnterPortal}
-                    className="px-8 sm:px-12 py-4 md:py-5 bg-emerald-600 text-white font-black text-[11px] uppercase tracking-[0.4em] transition-all shadow-2xl shadow-emerald-200 flex items-center justify-center gap-2"
+                    className="px-8 sm:px-12 py-4 md:py-5 bg-amber-600 text-white font-black text-[11px] uppercase tracking-[0.4em] transition-all shadow-2xl shadow-amber-200 flex items-center justify-center gap-2"
                   >
                     Enter Portal
                     <ArrowRight size={14} />
@@ -205,7 +205,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 className="relative"
               >
                 <div className="aspect-square w-full bg-slate-50 rounded-[2rem] md:rounded-[4rem] border border-slate-100 overflow-hidden relative shadow-2xl">
-                  <div className="absolute inset-0 bg-gradient-to-tr from-emerald-100/20 to-transparent"></div>
+                  <div className="absolute inset-0 bg-gradient-to-tr from-amber-100/20 to-transparent"></div>
                   <div className="absolute inset-0 flex items-center justify-center">
                     <img 
                       src={schoolHero} 
@@ -225,8 +225,8 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                       { icon: Award, label: 'Live Results' },
                       { icon: Fingerprint, label: 'ID Cards' }
                     ].map(feat => (
-                      <span key={feat.label} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white/90 backdrop-blur-md border border-emerald-100 text-slate-900 rounded-full shadow-md text-[9px] font-black uppercase tracking-widest">
-                        <feat.icon size={11} className="text-emerald-600" />
+                      <span key={feat.label} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white/90 backdrop-blur-md border border-amber-100 text-slate-900 rounded-full shadow-md text-[9px] font-black uppercase tracking-widest">
+                        <feat.icon size={11} className="text-amber-600" />
                         {feat.label}
                       </span>
                     ))}
@@ -238,11 +238,11 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                     transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
                     className="absolute top-4 right-4 sm:top-10 sm:right-10 bg-white p-4 sm:p-5 shadow-xl rounded-2xl border border-slate-100 flex items-center gap-3"
                   >
-                    <div className="w-8 h-8 sm:w-10 sm:h-10 bg-emerald-600 text-white rounded-xl flex items-center justify-center shrink-0">
+                    <div className="w-8 h-8 sm:w-10 sm:h-10 bg-amber-600 text-white rounded-xl flex items-center justify-center shrink-0">
                       <CheckCircle2 size={18} />
                     </div>
                     <div>
-                      <div className="text-emerald-600 font-black text-sm sm:text-lg">98%</div>
+                      <div className="text-amber-600 font-black text-sm sm:text-lg">98%</div>
                       <div className="text-[8px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest">Board Pass Rate</div>
                     </div>
                   </motion.div>
@@ -252,7 +252,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                     transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay: 1 }}
                     className="absolute bottom-24 left-2 sm:bottom-28 sm:left-[-20px] bg-slate-950 p-4 sm:p-5 shadow-xl rounded-2xl border border-slate-800 flex items-center gap-3"
                   >
-                    <div className="w-8 h-8 sm:w-10 sm:h-10 bg-emerald-600/20 text-emerald-400 rounded-xl flex items-center justify-center shrink-0">
+                    <div className="w-8 h-8 sm:w-10 sm:h-10 bg-amber-600/20 text-amber-400 rounded-xl flex items-center justify-center shrink-0">
                       <TrendingUp size={18} />
                     </div>
                     <div>
@@ -283,8 +283,8 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 transition={{ delay: idx * 0.08 }}
                 className="flex items-center gap-3 justify-center"
               >
-                <div className="w-10 h-10 sm:w-12 sm:h-12 bg-emerald-600/20 rounded-xl flex items-center justify-center shrink-0">
-                  <item.icon size={18} className="text-emerald-400" />
+                <div className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-600/20 rounded-xl flex items-center justify-center shrink-0">
+                  <item.icon size={18} className="text-amber-400" />
                 </div>
                 <div className="text-left">
                   <div className="text-white font-black text-xs sm:text-sm uppercase tracking-wider">{item.label}</div>
@@ -299,7 +299,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
         <section id="academics" className="py-12 md:py-16 px-4 sm:px-6 md:px-12 bg-slate-50">
           <div className="max-w-7xl mx-auto">
             <div className="text-center mb-10 md:mb-12 mx-auto max-w-3xl">
-                <h2 className="text-emerald-600 text-[10px] font-black uppercase tracking-[0.5em] mb-4">Academic Streams</h2>
+                <h2 className="text-amber-600 text-[10px] font-black uppercase tracking-[0.5em] mb-4">Academic Streams</h2>
                 <h3 className="text-3xl sm:text-4xl md:text-5xl font-black text-slate-950 uppercase tracking-tighter leading-tight">
                   Curated Programs for<br/>Every Stage of Growth.
                 </h3>
@@ -314,9 +314,9 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 whileHover={{ y: -5 }}
                 className="md:col-span-8 bg-white p-8 sm:p-10 border border-slate-100 shadow-sm hover:shadow-xl transition-all relative overflow-hidden group min-h-[320px] sm:min-h-[400px] flex flex-col justify-between"
               >
-                <div className="absolute top-[-50px] right-[-50px] w-64 h-64 bg-emerald-50 rounded-full group-hover:scale-110 transition-transform duration-500"></div>
+                <div className="absolute top-[-50px] right-[-50px] w-64 h-64 bg-amber-50 rounded-full group-hover:scale-110 transition-transform duration-500"></div>
                 <div className="relative z-10">
-                  <div className="w-12 h-12 sm:w-14 sm:h-14 bg-emerald-600 text-white rounded-2xl flex items-center justify-center mb-6 sm:mb-10 shadow-lg shadow-emerald-100">
+                  <div className="w-12 h-12 sm:w-14 sm:h-14 bg-amber-600 text-white rounded-2xl flex items-center justify-center mb-6 sm:mb-10 shadow-lg shadow-amber-100">
                     <BookOpen size={24} />
                   </div>
                   <h4 className="text-2xl sm:text-3xl font-black text-slate-950 uppercase tracking-tighter mb-4">Primary Foundation</h4>
@@ -325,7 +325,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                   </p>
                 </div>
                 <div className="relative z-10 flex flex-wrap items-center gap-6">
-                  <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50 px-4 py-2 rounded-full">Grades 1-8</span>
+                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest bg-amber-50 px-4 py-2 rounded-full">Grades 1-8</span>
                   <div className="flex -space-x-3">
                     {[1,2,3,4].map(i => (
                       <div key={i} className="w-10 h-10 rounded-full border-2 border-white bg-slate-100 flex items-center justify-center text-[10px] font-bold">
@@ -341,7 +341,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 whileHover={{ y: -5 }}
                 className="md:col-span-4 bg-slate-950 p-8 sm:p-10 shadow-2xl relative overflow-hidden group min-h-[320px] sm:min-h-[400px] flex flex-col justify-between"
               >
-                <div className="absolute inset-0 bg-emerald-600/10 group-hover:bg-emerald-600/20 transition-colors"></div>
+                <div className="absolute inset-0 bg-amber-600/10 group-hover:bg-amber-600/20 transition-colors"></div>
                 <div className="relative z-10">
                   <div className="w-12 h-12 sm:w-14 sm:h-14 bg-white text-slate-950 rounded-2xl flex items-center justify-center mb-6 sm:mb-10">
                     <ShieldCheck size={24} />
@@ -352,8 +352,8 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                   </p>
                 </div>
                 <div className="relative z-10">
-                  <div className="text-emerald-400 text-[10px] font-black uppercase tracking-widest mb-4">Science / Arts Streams</div>
-                  <button className="flex items-center gap-2 text-white text-[10px] font-black uppercase tracking-[0.2em] hover:text-emerald-400 transition-colors cursor-pointer">
+                  <div className="text-amber-400 text-[10px] font-black uppercase tracking-widest mb-4">Science / Arts Streams</div>
+                  <button className="flex items-center gap-2 text-white text-[10px] font-black uppercase tracking-[0.2em] hover:text-amber-400 transition-colors cursor-pointer">
                     Explore Matrix <ArrowRight size={14} />
                   </button>
                 </div>
@@ -362,7 +362,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
               {/* Academy - Third Bento Item */}
               <motion.div 
                 whileHover={{ y: -5 }}
-                className="md:col-span-12 bg-emerald-600 p-8 sm:p-10 shadow-xl relative overflow-hidden group min-h-[240px] sm:min-h-[300px] flex items-center"
+                className="md:col-span-12 bg-amber-600 p-8 sm:p-10 shadow-xl relative overflow-hidden group min-h-[240px] sm:min-h-[300px] flex items-center"
               >
                 <div className="absolute right-0 bottom-0 p-6 sm:p-10 opacity-10 rotate-12 group-hover:rotate-0 transition-transform duration-700 hidden sm:block">
                   <Trophy size={220} strokeWidth={1} />
@@ -370,7 +370,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center relative z-10 w-full">
                   <div className="space-y-4 sm:space-y-6">
                     <h4 className="text-2xl sm:text-3xl font-black text-white uppercase tracking-tighter">NSB1 Academy Prep</h4>
-                    <p className="text-emerald-50 text-base sm:text-lg leading-relaxed max-w-md">
+                    <p className="text-amber-50 text-base sm:text-lg leading-relaxed max-w-md">
                       Specialized evening coaching designed for conceptual mastery and top-tier board exam results.
                     </p>
                   </div>
@@ -391,7 +391,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
         <section id="mentors" className="py-12 md:py-16 px-4 sm:px-6 md:px-12 bg-white">
           <div className="max-w-7xl mx-auto">
             <div className="text-center mb-10 md:mb-14">
-              <h2 className="text-emerald-600 text-[10px] font-black uppercase tracking-[0.5em] mb-4">Our Commitment</h2>
+              <h2 className="text-amber-600 text-[10px] font-black uppercase tracking-[0.5em] mb-4">Our Commitment</h2>
               <h3 className="text-3xl sm:text-4xl md:text-5xl font-black text-slate-950 uppercase tracking-tighter leading-tight">
                 Pedagogical Excellence.
               </h3>
@@ -407,8 +407,8 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                   desc: 'Faculty members hold advanced credentials and undergo rigorous pedagogical training cycles for mastery in every subject.', 
                   icon: Award, 
                   accent: 'emerald',
-                  soft: 'bg-emerald-50 border-emerald-200 text-emerald-700',
-                  chip: 'bg-emerald-600',
+                  soft: 'bg-amber-50 border-amber-200 text-amber-700',
+                  chip: 'bg-amber-600',
                   features: ['100% Qualified Staff', 'Continuous PD Cycles', 'Subject Specialists']
                 },
                 { 
@@ -416,8 +416,8 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                   desc: 'Each student is assigned a personal academic mentor to track holistic development — academically and personally.', 
                   icon: Users, 
                   accent: 'indigo',
-                  soft: 'bg-indigo-50 border-indigo-200 text-indigo-700',
-                  chip: 'bg-indigo-600',
+                  soft: 'bg-teal-50 border-teal-200 text-teal-700',
+                  chip: 'bg-teal-600',
                   features: ['1:1 Mentorship', 'Progress Reviews', 'Parent Counselor Links']
                 },
                 { 
@@ -456,7 +456,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                       </span>
                     ))}
                   </div>
-                  <div className="h-1 w-12 bg-slate-200 rounded-full mx-auto group-hover:w-full group-hover:bg-emerald-600 transition-all duration-500"></div>
+                  <div className="h-1 w-12 bg-slate-200 rounded-full mx-auto group-hover:w-full group-hover:bg-amber-600 transition-all duration-500"></div>
                 </motion.div>
               ))}
             </div>
@@ -487,7 +487,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
           <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-20 items-center">
             
             <div className="lg:col-span-5 space-y-8 text-center">
-              <div className="inline-block px-4 py-1.5 bg-emerald-50 text-emerald-600 text-[11px] font-black uppercase tracking-widest rounded-full">
+              <div className="inline-block px-4 py-1.5 bg-amber-50 text-amber-600 text-[11px] font-black uppercase tracking-widest rounded-full">
                 Session 2026-27 Open
               </div>
               <h2 className="text-3xl sm:text-4xl md:text-5xl font-black text-slate-950 uppercase tracking-tighter leading-tight">
@@ -523,7 +523,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                 viewport={{ once: true }}
                 className="bg-white border border-slate-100 shadow-2xl p-6 sm:p-10 md:p-12 relative"
               >
-                <div className="absolute top-0 left-0 w-2 h-full bg-emerald-600"></div>
+                <div className="absolute top-0 left-0 w-2 h-full bg-amber-600"></div>
                 
                 <div className="mb-8 sm:mb-10">
                   <h3 className="text-xl sm:text-2xl font-black text-slate-950 uppercase tracking-tighter mb-2">Digital Inquiry Portal</h3>
@@ -534,14 +534,14 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                   <motion.div 
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
-                    className="bg-emerald-50 border border-emerald-100 p-8 sm:p-12 text-center space-y-6"
+                    className="bg-amber-50 border border-amber-100 p-8 sm:p-12 text-center space-y-6"
                   >
-                    <div className="w-16 h-16 sm:w-20 sm:h-20 bg-emerald-600 text-white rounded-full flex items-center justify-center mx-auto shadow-xl shadow-emerald-100">
+                    <div className="w-16 h-16 sm:w-20 sm:h-20 bg-amber-600 text-white rounded-full flex items-center justify-center mx-auto shadow-xl shadow-amber-100">
                       <CheckCircle2 size={32} />
                     </div>
                     <div className="space-y-2">
-                      <h4 className="text-lg sm:text-xl font-black text-emerald-950 uppercase tracking-tighter">Inquiry Received</h4>
-                      <p className="text-sm text-emerald-800 font-medium">
+                      <h4 className="text-lg sm:text-xl font-black text-amber-600 uppercase tracking-tighter">Inquiry Received</h4>
+                      <p className="text-sm text-amber-700 font-medium">
                         Thank you for your interest. Our admissions counselor will contact you shortly to guide you through the enrollment matrix.
                       </p>
                     </div>
@@ -557,7 +557,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                           placeholder="John Doe"
                           value={studentName}
                           onChange={(e) => setStudentName(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-100 focus:border-emerald-500 focus:bg-white p-4 text-xs font-bold outline-none transition-all"
+                          className="w-full bg-slate-50 border border-slate-100 focus:border-amber-500 focus:bg-white p-4 text-xs font-bold outline-none transition-all"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -568,7 +568,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                           placeholder="+92 3XX XXXXXXX"
                           value={parentPhone}
                           onChange={(e) => setParentPhone(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-100 focus:border-emerald-500 focus:bg-white p-4 text-xs font-bold outline-none transition-all"
+                          className="w-full bg-slate-50 border border-slate-100 focus:border-amber-500 focus:bg-white p-4 text-xs font-bold outline-none transition-all"
                         />
                       </div>
                     </div>
@@ -578,7 +578,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                       <select
                         value={selectedGrade}
                         onChange={(e) => setSelectedGrade(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-100 focus:border-emerald-500 focus:bg-white p-4 text-xs font-bold outline-none cursor-pointer transition-all appearance-none"
+                        className="w-full bg-slate-50 border border-slate-100 focus:border-amber-500 focus:bg-white p-4 text-xs font-bold outline-none cursor-pointer transition-all appearance-none"
                       >
                         <option value="Prep">Kindergarten / Prep</option>
                         <option value="Primary">Primary (1 - 5)</option>
@@ -595,7 +595,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                         placeholder="Specify custom requirements or subject preferences..."
                         value={messageText}
                         onChange={(e) => setMessageText(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-100 focus:border-emerald-500 focus:bg-white p-4 text-xs font-bold outline-none transition-all resize-none"
+                        className="w-full bg-slate-50 border border-slate-100 focus:border-amber-500 focus:bg-white p-4 text-xs font-bold outline-none transition-all resize-none"
                       />
                     </div>
 
@@ -603,7 +603,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
                       whileHover={{ scale: 1.01, translateY: -2 }}
                       whileTap={{ scale: 0.99 }}
                       type="submit"
-                      className="w-full py-4 sm:py-5 bg-slate-950 text-white font-black text-[11px] uppercase tracking-[0.4em] transition-all flex items-center justify-center gap-3 hover:bg-emerald-600 shadow-2xl"
+                      className="w-full py-4 sm:py-5 bg-slate-950 text-white font-black text-[11px] uppercase tracking-[0.4em] transition-all flex items-center justify-center gap-3 hover:bg-amber-600 shadow-2xl"
                     >
                       Process Inquiry
                       <Send size={14} />
@@ -631,7 +631,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
             </div>
             
             <div className="space-y-6">
-              <h5 className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-500">Navigation</h5>
+              <h5 className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500">Navigation</h5>
               <ul className="space-y-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
                 <li><button onClick={() => handleNavClick('home')} className="hover:text-white transition-colors cursor-pointer">Home Campus</button></li>
                 <li><button onClick={() => handleNavClick('academics')} className="hover:text-white transition-colors cursor-pointer">Curriculum</button></li>
@@ -641,7 +641,7 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
             </div>
 
             <div className="space-y-6">
-              <h5 className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-500">Portals</h5>
+              <h5 className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500">Portals</h5>
               <ul className="space-y-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
                 <li><button onClick={onEnterPortal} className="hover:text-white transition-colors text-left uppercase cursor-pointer">Principal Dashboard</button></li>
                 <li><button onClick={onEnterPortal} className="hover:text-white transition-colors text-left uppercase cursor-pointer">Faculty Portal</button></li>
@@ -650,10 +650,10 @@ export default function LandingPage({ teachers, students, classes, onEnterPortal
             </div>
 
             <div className="space-y-6">
-              <h5 className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-500">Connect</h5>
+              <h5 className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500">Connect</h5>
               <div className="flex gap-4">
                 {[Phone, Mail, Globe].map((Icon, i) => (
-                  <div key={i} className="w-10 h-10 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-center text-slate-400 hover:bg-emerald-600 hover:text-white transition-all cursor-pointer">
+                  <div key={i} className="w-10 h-10 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-center text-slate-400 hover:bg-amber-600 hover:text-white transition-all cursor-pointer">
                     <Icon size={18} />
                   </div>
                 ))}

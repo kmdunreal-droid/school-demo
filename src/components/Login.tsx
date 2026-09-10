@@ -132,7 +132,7 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
   };
 
   return (
-    <div id="login-container" className="min-h-screen flex flex-col items-center justify-center bg-white dark:bg-slate-950 px-6 font-sans border-t-8 border-slate-900 dark:border-indigo-600 text-slate-900 dark:text-slate-100 transition-colors duration-200">
+    <div id="login-container" className="min-h-screen flex flex-col items-center justify-center bg-white dark:bg-slate-950 px-6 font-sans border-t-8 border-slate-900 dark:border-teal-600 text-slate-900 dark:text-slate-100 transition-colors duration-200">
       <div className="w-full max-w-sm space-y-12">
         
         {/* Minimalist Header */}
@@ -170,7 +170,7 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="ID, Username or Email"
-                className="w-full bg-transparent border-b border-slate-200 dark:border-slate-800 py-4 text-[11px] font-bold tracking-[0.2em] focus:outline-none focus:border-indigo-600 dark:focus:border-indigo-500 text-slate-900 dark:text-white transition-all placeholder:text-slate-300 dark:placeholder:text-slate-650"
+                className="w-full bg-transparent border-b border-slate-200 dark:border-slate-800 py-4 text-[11px] font-bold tracking-[0.2em] focus:outline-none focus:border-teal-600 dark:focus:border-teal-500 text-slate-900 dark:text-white transition-all placeholder:text-slate-300 dark:placeholder:text-slate-650"
               />
             </div>
 
@@ -182,12 +182,12 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Password"
-                className="w-full bg-transparent border-b border-slate-200 dark:border-slate-800 py-4 text-[11px] font-bold tracking-[0.2em] focus:outline-none focus:border-indigo-600 dark:focus:border-indigo-500 text-slate-900 dark:text-white transition-all placeholder:text-slate-300 dark:placeholder:text-slate-650"
+                className="w-full bg-transparent border-b border-slate-200 dark:border-slate-800 py-4 text-[11px] font-bold tracking-[0.2em] focus:outline-none focus:border-teal-600 dark:focus:border-teal-500 text-slate-900 dark:text-white transition-all placeholder:text-slate-300 dark:placeholder:text-slate-650"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors"
+                className="absolute right-0 top-1/2 -translate-y-1/2 text-slate-400 hover:text-teal-600 transition-colors"
               >
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
@@ -198,7 +198,7 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
             <button
               id="login-submit-btn"
               type="submit"
-              className="w-full py-4 bg-slate-950 dark:bg-indigo-600 hover:bg-slate-800 dark:hover:bg-indigo-500 text-white font-bold text-[10px] uppercase tracking-[0.4em] transition-all cursor-pointer shadow-2xl"
+              className="w-full py-4 bg-slate-950 dark:bg-teal-600 hover:bg-slate-800 dark:hover:bg-teal-500 text-white font-bold text-[10px] uppercase tracking-[0.4em] transition-all cursor-pointer shadow-2xl"
             >
               Sign In to Portal
             </button>
