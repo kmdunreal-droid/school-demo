@@ -24,7 +24,9 @@
  *      Start in: "d:\app\school app demo"
  *   5) OK — har hafte khud chalega 👍
  */
-require('dotenv').config();
+// dotenv optional hai — GitHub Actions par nahi hota, wahan secrets
+// env vars ke taur par aati hain; local par .env se aati hain.
+try { require('dotenv').config(); } catch { /* dotenv na mile to koi baat nahi */ }
 
 const URL = process.env.VITE_SUPABASE_URL || 'https://ezggmokzscashorchsdw.supabase.co';
 const KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
