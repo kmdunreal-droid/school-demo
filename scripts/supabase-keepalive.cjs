@@ -9,6 +9,10 @@
  * Use:
  *   npm run keepalive            // ek baar ping (dist/log printing ke saath)
  *   npm run keepalive:watch      // --watch: har 6 ghante auto-ping (Ctrl+C tak)
+ *   KEEPALIVE_INTERVAL_HOURS=48 npm run keepalive:watch   // har 2 din ping
+ *
+ * GitHub Actions cloud cron (PC off ho tab bhi har 2 din ping):
+ *   .github/workflows/keepalive.yml — repo secrets se chalta hai
  *
  * Windows Task Scheduler (har hafta auto chalane ke liye):
  *   1) Win+R → "taskchd.msc" → "Create Basic Task..."
@@ -26,7 +30,10 @@ const URL = process.env.VITE_SUPABASE_URL || 'https://ezggmokzscashorchsdw.supab
 const KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
 
 const IS_WATCH = process.argv.includes('--watch');
-const INTERVAL_MIN = 6 * 60; // 6 ghante
+// Interval: KEEPALIVE_INTERVAL_HOURS env se override ho sakta hai
+// (e.g. 48 = har 2 din, 72 = har 3 din). Default: 6 ghante.
+const HOURS = Number(process.env.KEEPALIVE_INTERVAL_HOURS);
+const INTERVAL_MIN = HOURS > 0 ? HOURS * 60 : 6 * 60; // 6 ghante
 const PING_ENDPOINTS = [
   { name: 'postgrest root', url: `${URL}/rest/v1/` },
   { name: 'auth health', url: `${URL}/auth/v1/health` },
