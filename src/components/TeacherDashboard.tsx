@@ -1248,7 +1248,7 @@ export default function TeacherDashboard({
           <img src="/logo.png" alt="Demo School Logo" className="h-10 w-auto object-contain" referrerPolicy="no-referrer" />
           <div>
             <h1 className="font-black text-gray-900 tracking-tight uppercase text-lg leading-none">Demo School</h1>
-            <p className="text-[10px] font-bold text-teal-600 uppercase tracking-[0.2em] mt-0.5">Faculty Hub</p>
+            <p className="text-[10px] font-bold text-teal-600 uppercase tracking-[0.2em] mt-0.5">Teacher Portal</p>
           </div>
         </div>
         <div className="flex items-center gap-2 relative">
@@ -1312,12 +1312,12 @@ export default function TeacherDashboard({
           </div>
           <div className="text-center w-full">
             <h1 className="text-slate-900 font-black text-sm tracking-widest uppercase leading-none">Demo School</h1>
-            <p className="text-teal-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Faculty Hub</p>
+            <p className="text-teal-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Teacher Portal</p>
           </div>
         </div>
 
         {/* Nav groups - Minimalist List */}
-        <nav className="flex-1 overflow-y-auto p-4 space-y-1 mt-2">
+        <nav className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-1 mt-2 custom-scrollbar">
             {[
               { id: 'dashboard', label: 'Overview', icon: Sparkles },
               { id: 'students', label: 'Roster', icon: Users },
@@ -1391,7 +1391,10 @@ export default function TeacherDashboard({
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3">
               <img src="/logo.png" alt="Demo School Logo" className="h-14 w-auto object-contain sm:block hidden" referrerPolicy="no-referrer" />
-              <h2 className="text-3xl font-black text-slate-900 tracking-tight sm:block hidden select-none">Demo School</h2>
+              <div className="sm:block hidden leading-none select-none">
+                <h2 className="text-3xl font-black text-slate-900 tracking-tight">Demo School</h2>
+                <p className="text-teal-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Teacher Portal</p>
+              </div>
             </div>
             
             {/* Real-time active period locator */}

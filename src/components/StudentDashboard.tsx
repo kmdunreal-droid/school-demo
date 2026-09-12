@@ -450,7 +450,10 @@ export default function StudentDashboard({
       <div id="student-mobile-bar" className="md:hidden flex items-center justify-between px-4 py-3 bg-white border-b border-gray-200 shadow-sm z-20">
         <div className="flex items-center gap-3">
           <img src="/logo.png" alt="Demo School Logo" className="w-20 h-20 object-contain" referrerPolicy="no-referrer" />
-          <h1 className="font-black text-gray-900 tracking-tight uppercase tracking-[0.1em] text-xl sm:text-2xl">Demo School</h1>
+          <div className="leading-none">
+            <h1 className="font-black text-gray-900 tracking-tight uppercase tracking-[0.1em] text-xl sm:text-2xl">Demo School</h1>
+            <p className="text-teal-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Student Portal</p>
+          </div>
         </div>
         <div className="flex items-center gap-2 relative">
           {/* Mobile Bell Button */}
@@ -521,7 +524,7 @@ export default function StudentDashboard({
         </div>
 
         {/* Minimalist Navigation */}
-        <nav className="flex-1 overflow-y-auto p-4 space-y-1 mt-2">
+        <nav className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-1 mt-2 custom-scrollbar">
             {[
               { id: 'dashboard', label: 'Campus', icon: Sparkles },
               { id: 'attendance', label: 'Presence', icon: CheckSquare },
@@ -588,7 +591,10 @@ export default function StudentDashboard({
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3">
               <img src="/logo.png" alt="Demo School Logo" className="h-20 w-auto object-contain sm:block hidden" referrerPolicy="no-referrer" />
-              <h2 className="text-3xl font-black text-slate-900 tracking-tight sm:block hidden select-none">Demo Academy Student portal</h2>
+              <div className="sm:block hidden leading-none select-none">
+                <h2 className="text-3xl font-black text-slate-900 tracking-tight">Demo School</h2>
+                <p className="text-teal-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Student Portal</p>
+              </div>
             </div>
             
             {/* Real-time active period locator */}

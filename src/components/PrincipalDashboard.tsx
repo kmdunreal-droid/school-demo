@@ -4,7 +4,7 @@ import { listChanged } from '../lib/dataUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote, Wallet, MapPin, Navigation, Coins, CalendarClock, LocateFixed, Megaphone } from 'lucide-react';
+import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote, Wallet, MapPin, Navigation, Coins, CalendarClock, LocateFixed, Megaphone, LayoutGrid, Settings } from 'lucide-react';
 import AnalyticsTab from './AnalyticsTab';
 import NoticeBoard from './NoticeBoard';
 import EventsCalendar from './EventsCalendar';
@@ -109,6 +109,22 @@ const parseMonthKey = (raw: unknown, fallbackYear: number): { idx: number; year:
 };
 
 
+// ===== FEATURES HUB =====
+// Purane alag-alag tabs jo ab ek hi "Features Hub" tab ke sub-tabs hain.
+// In ids ka istemal legacy localStorage/history migration ke liye rehta hai.
+const FEATURES_HUB_TABS = ['notices', 'calendar', 'certificates', 'ai_paper', 'alerts', 'settings'] as const;
+type FeaturesSubTab = (typeof FEATURES_HUB_TABS)[number];
+const isFeaturesHubTab = (t: unknown): t is FeaturesSubTab =>
+  (FEATURES_HUB_TABS as readonly unknown[]).includes(t);
+const FEATURES_HUB_META: Record<FeaturesSubTab, { label: string; icon: any }> = {
+  notices: { label: 'Notice Board', icon: Megaphone },
+  calendar: { label: 'Calendar', icon: CalendarDays },
+  certificates: { label: 'Certificates', icon: Award },
+  ai_paper: { label: 'AI Paper', icon: Sparkles },
+  alerts: { label: 'Alert Center', icon: AlertCircle },
+  settings: { label: 'Cloud Config', icon: Settings },
+};
+
 interface PrincipalDashboardProps {
   userSession: UserSession;
   teachers: Teacher[];
@@ -139,7 +155,7 @@ interface PrincipalDashboardProps {
   pushLocalToCloud: () => Promise<void>;
 }
 
-type PrincipalTabType = 'dashboard' | 'management_hub' | 'timetable' | 'alerts' | 'settings' | 'registers' | 'monthly_report' | 'fees' | 'teacher_pay' | 'analytics' | 'notices' | 'calendar' | 'certificates' | 'ai_paper';
+type PrincipalTabType = 'dashboard' | 'management_hub' | 'features_hub' | 'timetable' | 'alerts' | 'settings' | 'registers' | 'monthly_report' | 'fees' | 'teacher_pay' | 'analytics' | 'notices' | 'calendar' | 'certificates' | 'ai_paper';
 type CoordinatorTabType = PrincipalTabType;
 type TabType = PrincipalTabType | CoordinatorTabType;
 
@@ -195,7 +211,11 @@ export default function PrincipalDashboard({
 }: PrincipalDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     const saved = safeStorage.getItem('acadamis_active_tab');
-    const valid: TabType[] = ['dashboard', 'management_hub', 'timetable', 'alerts', 'settings', 'registers', 'monthly_report', 'fees', 'teacher_pay', 'analytics', 'notices', 'calendar', 'certificates', 'ai_paper'];
+    // Legacy tabs jo ab Features Hub mein merge ho chuke hain → hub par map karo
+    if (isFeaturesHubTab(saved)) {
+      return 'features_hub' as TabType;
+    }
+    const valid: TabType[] = ['dashboard', 'management_hub', 'features_hub', 'timetable', 'alerts', 'settings', 'registers', 'monthly_report', 'fees', 'teacher_pay', 'analytics', 'notices', 'calendar', 'certificates', 'ai_paper'];
     return (saved && valid.includes(saved as TabType) ? saved : 'dashboard') as TabType;
   });
 
@@ -211,7 +231,8 @@ export default function PrincipalDashboard({
 
     const handlePopState = (event: PopStateEvent) => {
       if (event.state && event.state.tab) {
-        setActiveTab(event.state.tab);
+        // Legacy feature tab ids ko Features Hub par map karo
+        setActiveTab(isFeaturesHubTab(event.state.tab) ? ('features_hub' as TabType) : event.state.tab);
       }
     };
 
@@ -238,9 +259,19 @@ export default function PrincipalDashboard({
     return (saved && ['fees', 'attendance', 'results'].includes(saved) ? saved : 'fees') as 'fees' | 'attendance' | 'results';
   });
 
+  const [featuresSubTab, setFeaturesSubTab] = useState<FeaturesSubTab>(() => {
+    const savedSub = safeStorage.getItem('acadamis_features_subtab');
+    if (isFeaturesHubTab(savedSub)) return savedSub;
+    // Legacy: agar user pehle kisi feature tab par tha, wahi sub-tab khule
+    const savedTab = safeStorage.getItem('acadamis_active_tab');
+    if (isFeaturesHubTab(savedTab)) return savedTab;
+    return 'notices';
+  });
+
   // Persist sub-tabs
   useEffect(() => { safeStorage.setItem('acadamis_mgmt_subtab', managementSubTab); }, [managementSubTab]);
   useEffect(() => { safeStorage.setItem('acadamis_registers_subtab', registersSubTab); }, [registersSubTab]);
+  useEffect(() => { safeStorage.setItem('acadamis_features_subtab', featuresSubTab); }, [featuresSubTab]);
   const [broadcastLogs, setBroadcastLogs] = useState<any[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const touchStartX = useRef<number | null>(null);
@@ -2826,7 +2857,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           <img src="/logo.png" alt="Demo School Logo" className="h-9 w-auto object-contain shrink-0" referrerPolicy="no-referrer" />
           <div className="min-w-0 flex flex-col leading-none">
             <h1 className="font-black text-gray-900 tracking-tight uppercase text-sm truncate">Demo School</h1>
-            <span className="text-[9px] font-black text-teal-600 uppercase tracking-[0.2em]">Principal Office</span>
+            <span className="text-[9px] font-black text-teal-600 uppercase tracking-[0.2em]">Principal Portal</span>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -2947,7 +2978,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         </div>
 
         {/* Minimalist Nav */}
-        <nav className="flex-1 overflow-y-auto px-5 space-y-1">
+        <nav className="flex-1 overflow-y-auto overscroll-contain px-5 space-y-1 custom-scrollbar">
             {[
               { id: 'dashboard', label: 'Home', icon: BarChart2 },
               { id: 'registers', label: 'Records', icon: Database },
@@ -2956,12 +2987,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               { id: 'monthly_report', label: 'Reports', icon: FileText, color: 'text-teal-600' },
               { id: 'teacher_pay', label: 'Teacher Pay', icon: Banknote },
               { id: 'analytics', label: 'Analytics', icon: BarChart2, color: 'text-amber-600' },
-              { id: 'notices', label: 'Notice Board', icon: Megaphone, color: 'text-amber-600' },
-              { id: 'calendar', label: 'Calendar', icon: CalendarDays },
-              { id: 'certificates', label: 'Certificates', icon: Award },
-              { id: 'ai_paper', label: 'AI Paper', icon: Sparkles, color: 'text-indigo-600' },
-              { id: 'alerts', label: 'Alert Center', icon: AlertCircle, color: 'text-rose-600' },
-              { id: 'settings', label: 'Cloud Config', icon: Sparkles },
+              { id: 'features_hub', label: 'Features Hub', icon: LayoutGrid },
             ].map(link => {
               const Icon = link.icon;
               const isActive = activeTab === link.id;
@@ -3020,10 +3046,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         {/* ========== DASHBOARD OVERVIEW TABLEAUX ========== */}
         {activeTab === 'dashboard' && (
           <div id="panel-principal-dashboard" className="space-y-8 animate-fade-in">
-            {/* Greeting Header */}
+            {/* Greeting Header — page-appropriate title */}
             <div className="bg-amber-600 p-8 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 mb-8 shadow-lg border-b border-amber-700/50">
+              <p className="text-[10px] sm:text-xs font-black text-amber-100 uppercase tracking-[0.3em] mb-1">
+                Demo School · Principal Portal
+              </p>
               <h2 className="text-xl sm:text-2xl md:text-3xl font-black text-white tracking-tighter font-display uppercase leading-tight truncate whitespace-nowrap">
-                {userSession.role === 'developer' ? 'System Tracking Dashboard' : 'Academic Command Center'}
+                {userSession.role === 'developer' ? 'System Tracking Dashboard' : 'School Overview'}
               </h2>
             </div>
 
@@ -4146,7 +4175,31 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           </div>
         )}
 
-        {activeTab === 'alerts' && (
+        {/* ========== FEATURES HUB SUB-NAVIGATION HEADER (Admin Hub style) ========== */}
+        {activeTab === 'features_hub' && (
+          <div className="bg-white/95 backdrop-blur border border-slate-200 p-2 shadow-sm flex flex-wrap gap-2 sticky top-0 z-10 rounded-2xl animate-fade-in">
+            {FEATURES_HUB_TABS.map(id => {
+              const meta = FEATURES_HUB_META[id];
+              const Icon = meta.icon;
+              return (
+                <button
+                  key={id}
+                  onClick={() => setFeaturesSubTab(id)}
+                  className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
+                    featuresSubTab === id
+                      ? 'bg-teal-600 text-white shadow-md'
+                      : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
+                  }`}
+                >
+                  <Icon size={14} />
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {activeTab === 'features_hub' && featuresSubTab === 'alerts' && (
           <div id="notification-center" className="space-y-6 animate-fade-in font-sans pb-20">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-100 pb-6 mb-8">
               <div>
@@ -6518,21 +6571,21 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
           <AnalyticsTab userSession={userSession} students={students} classes={classes} attendance={attendance} marks={marks} fees={fees} />
         )}
         {/* ========== NOTICE BOARD ========== */}
-        {activeTab === 'notices' && (
+        {activeTab === 'features_hub' && featuresSubTab === 'notices' && (
           <div className="bg-white/40 rounded-2xl p-2 sm:p-4">
             <NoticeBoard userSession={userSession} />
           </div>
         )}
         {/* ========== SCHOOL CALENDAR ========== */}
-        {activeTab === 'calendar' && (
+        {activeTab === 'features_hub' && featuresSubTab === 'calendar' && (
           <EventsCalendar userSession={userSession} />
         )}
         {/* ========== CERTIFICATES + EXPORT ========== */}
-        {activeTab === 'certificates' && (
+        {activeTab === 'features_hub' && featuresSubTab === 'certificates' && (
           <CertificateTab userSession={userSession} students={students} classes={classes} attendance={attendance} fees={fees} />
         )}
         {/* ========== AI PAPER GENERATOR ========== */}
-        {activeTab === 'ai_paper' && (
+        {activeTab === 'features_hub' && featuresSubTab === 'ai_paper' && (
           <div className="bg-white/40 rounded-2xl p-2 sm:p-4">
             <AiPaperGenerator userSession={userSession} classes={classes} />
           </div>
@@ -6701,7 +6754,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         )}
         {/* end teacher_pay panel */}
         {/* ========== SETTINGS & CONFIGURATION PORTAL ========== */}
-        {activeTab === 'settings' && (
+        {activeTab === 'features_hub' && featuresSubTab === 'settings' && (
           <div id="panel-principal-settings" className="space-y-8 animate-fade-in font-sans bg-slate-50 dark:bg-slate-900/40 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-inner">
 
             {/* ===== Settings Hero Banner ===== */}
