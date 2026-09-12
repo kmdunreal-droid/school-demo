@@ -184,7 +184,7 @@ export function subscribeRecords(onEvent: (payload: any) => void): () => void {
   if (isDemoMode()) return () => {}; // demo = realtime off
   // Har call ka APNA channel — same naam par supabase-js channel reuse karta hai
   // aur pehli subscribe ke baad naye .on() callbacks par throw karta hai.
-  const channel: RealtimeChannel = supabase.channel(`nsb1-school-${++channelSeq}`);
+  const channel: RealtimeChannel = supabase.channel(`demo-school-${++channelSeq}`);
   for (const table of KNOWN_TABLES) {
     channel.on(
       'postgres_changes',

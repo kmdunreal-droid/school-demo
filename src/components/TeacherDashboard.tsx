@@ -5,11 +5,17 @@ import {
   Users, Calendar, Award, CheckSquare, LogOut, Save, UserCheck, UserX, User,
   Clock, AlertCircle, Sparkles, BookOpen, Menu, X, ArrowLeft, ClipboardList, Info, CreditCard,
   Bell, CheckCircle2, ListTodo, CalendarDays, ArrowRight, Search, PlusCircle, AlertTriangle, ChevronDown, Sun, Moon, Phone, Trash2, Plus, Send, Download, Fingerprint, School, RefreshCw, Printer,
-  Wallet, Banknote, MapPin, Navigation, Receipt, LocateFixed, Coins, CalendarClock
+  Wallet, Banknote, MapPin, Navigation, Receipt, LocateFixed, Coins, CalendarClock, Megaphone
 } from 'lucide-react';
+import QuizModule from './QuizModule';
+import AiPaperGenerator from './AiPaperGenerator';
+import AiSettingsSection from './AiSettingsSection';
+import { getAttendanceSettings } from '../lib/attendanceSettings';
+import NoticeBoard from './NoticeBoard';
+import EventsCalendar from './EventsCalendar';
 import { getNotifications, addNotification, saveNotifications, PortalNotification } from '../lib/notificationUtils';
 import { getPeriodStatus, getStatusColor } from '../lib/periodUtils';
-import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, ExamType, UserSession, FeeRecord, DayOfWeek, Assignment, TeacherAttendance, TeacherPayConfig, TeacherPayslip, SchoolLocation, getStudentPhoto } from '../types';
+import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, ExamType, UserSession, FeeRecord, DayOfWeek, Assignment, TeacherAttendance, TeacherPayConfig, TeacherPayslip, SchoolLocation, PeriodAttendance, getStudentPhoto } from '../types';
 import { subscribeRecords, loadCollectionFromSupabase, sbQueueWrite, sbQueueDelete, flushSupabase } from '../lib/supabaseSync';
 import { DEFAULT_SCHOOL_LOCATION, getCurrentPosition, haversineMeters, isWithinSchoolRadius, formatDistance } from '../lib/geoUtils';
 import { defaultPayConfig, summarizeTeacherMonth, buildPayslip, monthKeyOf, monthLabel, formatPKR } from '../lib/payEngine';
@@ -29,6 +35,8 @@ interface TeacherDashboardProps {
   setTimetable: React.Dispatch<React.SetStateAction<TimetableEntry[]>>;
   attendance: Attendance[];
   setAttendance: React.Dispatch<React.SetStateAction<Attendance[]>>;
+  periodAttendance: PeriodAttendance[];
+  setPeriodAttendance: React.Dispatch<React.SetStateAction<PeriodAttendance[]>>;
   marks: Mark[];
   setMarks: React.Dispatch<React.SetStateAction<Mark[]>>;
   fees: FeeRecord[];
@@ -40,7 +48,7 @@ interface TeacherDashboardProps {
   onInstallApp: () => void;
 }
 
-type TabType = 'dashboard' | 'students' | 'attendance' | 'marks' | 'timetable' | 'fees' | 'settings' | 'diary' | 'my-attendance' | 'my-pay';
+type TabType = 'dashboard' | 'students' | 'attendance' | 'marks' | 'timetable' | 'fees' | 'settings' | 'diary' | 'my-attendance' | 'my-pay' | 'quiz' | 'ai_paper' | 'notices' | 'calendar';
 
 import { safeStorage } from '../lib/safeStorage';
 
@@ -69,6 +77,8 @@ export default function TeacherDashboard({
   setTimetable,
   attendance,
   setAttendance,
+  periodAttendance,
+  setPeriodAttendance,
   marks,
   setMarks,
   fees,
@@ -284,7 +294,7 @@ export default function TeacherDashboard({
     toast.success(`Collection of ${collected} for ${student.name} recorded!`);
 
     // SATH HI: Trigger parents message notification popup preview
-    const rawMsg = `Saddar Campus Fee Deposit Receipt:\nAssalam-o-Alaikum! Fee payment of ${collected} has been received for student ${student.name} (${newFeeMonth} - ${newFeeType}). Your account balance has been updated. Thank you.\n- NSB1 Digital Registrar Office.`;
+    const rawMsg = `Saddar Campus Fee Deposit Receipt:\nAssalam-o-Alaikum! Fee payment of ${collected} has been received for student ${student.name} (${newFeeMonth} - ${newFeeType}). Your account balance has been updated. Thank you.\n- Demo School Digital Registrar Office.`;
 
     setFeeNotificationPopup({
       studentName: student.name,
@@ -407,7 +417,7 @@ export default function TeacherDashboard({
         return;
       }
       dist = haversineMeters(schoolLocation.lat, schoolLocation.lng, pos.latitude, pos.longitude);
-      if (dist > schoolLocation.radiusMeters) {
+      if (getAttendanceSettings().gpsRestricted && dist > schoolLocation.radiusMeters) {
         toast.error(`Aap school se ${formatDistance(dist)} door hain (radius ${schoolLocation.radiusMeters} m). Attendance sirf school ke andar se mark hoti hai.`);
         return;
       }
@@ -512,6 +522,74 @@ export default function TeacherDashboard({
     [teacherProfile, myPayConfig, myTeacherAttendance, payYear, payMonthIdx, teacherPaySlips]
   );
 
+  // ===== COMPLETE SALARY HISTORY — service tenure + saare months ka hisab =====
+  const salaryHistory = React.useMemo(() => {
+    const now = new Date();
+    const curY = now.getFullYear();
+    const curM = now.getMonth();
+
+    // Sab se pehla record dhundo (attendance + payslips dono se)
+    let minY = curY, minM = curM;
+    let hasRecord = false;
+    for (const r of myTeacherAttendance) {
+      if (String(r.teacherId) !== String(teacherId)) continue;
+      const k = monthKeyOf(r.date);
+      if (!hasRecord || k.year < minY || (k.year === minY && k.month < minM)) {
+        minY = k.year; minM = k.month; hasRecord = true;
+      }
+    }
+    for (const key of Object.keys(teacherPaySlips)) {
+      const parts = key.split('_');
+      if (parts[0] !== String(teacherId)) continue;
+      const y = Number(parts[1]), m = Number(parts[2]);
+      if (isNaN(y) || isNaN(m)) continue;
+      if (!hasRecord || y < minY || (y === minY && m < minM)) {
+        minY = y; minM = m; hasRecord = true;
+      }
+    }
+
+    // Har month ka payslip — join month se current month tak
+    const slips: TeacherPayslip[] = [];
+    let y = minY, m = minM;
+    while (y < curY || (y === curY && m <= curM)) {
+      slips.push(buildPayslip(teacherProfile, myPayConfig, myTeacherAttendance, y, m, teacherPaySlips));
+      m++;
+      if (m > 11) { m = 0; y++; }
+    }
+
+    // Tenure — kitne saal/mahine se hain
+    let tenureMonths = (curY - minY) * 12 + (curM - minM);
+    if (tenureMonths < 0) tenureMonths = 0;
+    const tenureYears = Math.floor(tenureMonths / 12);
+    const tenureRemMonths = tenureMonths % 12;
+
+    // Totals
+    const totalNet = slips.reduce((a, s) => a + s.netPay, 0);
+    const totalPaid = slips.filter(s => s.paid).reduce((a, s) => a + s.netPay, 0);
+    const totalPending = totalNet - totalPaid;
+    const avgMonthly = slips.length > 0 ? Math.round(totalNet / slips.length) : 0;
+    const totalPresent = slips.reduce((a, s) => a + s.presentDays + s.lateDays, 0);
+    const totalAbsent = slips.reduce((a, s) => a + s.absentDays, 0);
+
+    return {
+      slips: slips.slice().reverse(), // latest pehle
+      tenureYears,
+      tenureRemMonths,
+      tenureTotalMonths: tenureMonths,
+      startLabel: monthLabel(minY, minM),
+      startYear: minY,
+      startMonth: minM,
+      hasRecord,
+      totalNet,
+      totalPaid,
+      totalPending,
+      avgMonthly,
+      totalPresent,
+      totalAbsent,
+      monthsCount: slips.length,
+    };
+  }, [teacherProfile, myPayConfig, myTeacherAttendance, teacherId, teacherPaySlips]);
+
   const printPayslip = () => {
     const t = teacherProfile;
     if (!t) return;
@@ -556,7 +634,7 @@ export default function TeacherDashboard({
     </div>
     <table>${rows}</table>
     <table><tr class="tot"><td>Net Payable</td><td style="text-align:right">${formatPKR(s.netPay)}</td></tr></table>
-    <div class="foot"><span>NSB1 School — Digital Registrar</span><span>Generated: ${new Date().toLocaleString()}</span></div>
+    <div class="foot"><span>Demo School — Digital Registrar</span><span>Generated: ${new Date().toLocaleString()}</span></div>
   </div>
   <script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script>
   </body></html>`;
@@ -1167,9 +1245,9 @@ export default function TeacherDashboard({
       {/* Mobile Top Bar */}
       <div id="mobile-teacher-top-bar" className="md:hidden sticky top-0 flex items-center justify-between px-4 py-3 bg-white/90 backdrop-blur-lg border-b border-slate-200 shadow-sm z-20">
         <div className="flex items-center gap-3">
-          <img src="/logo.png" alt="NSB1 Logo" className="h-10 w-auto object-contain" referrerPolicy="no-referrer" />
+          <img src="/logo.png" alt="Demo School Logo" className="h-10 w-auto object-contain" referrerPolicy="no-referrer" />
           <div>
-            <h1 className="font-black text-gray-900 tracking-tight uppercase text-lg leading-none">NSB1 School</h1>
+            <h1 className="font-black text-gray-900 tracking-tight uppercase text-lg leading-none">Demo School</h1>
             <p className="text-[10px] font-bold text-teal-600 uppercase tracking-[0.2em] mt-0.5">Faculty Hub</p>
           </div>
         </div>
@@ -1226,14 +1304,14 @@ export default function TeacherDashboard({
         <div className="p-4 border-b border-slate-100 flex flex-col items-center gap-2">
           <div className="flex items-center justify-between w-full">
             <div className="mb-1">
-              <img src="/logo.png" alt="NSB1 Logo" className="h-14 w-auto object-contain" referrerPolicy="no-referrer" />
+              <img src="/logo.png" alt="Demo School Logo" className="h-14 w-auto object-contain" referrerPolicy="no-referrer" />
             </div>
             <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="md:hidden flex items-center justify-center px-2 h-9 rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-50 transition-colors">
               <X size={18} />
             </button>
           </div>
           <div className="text-center w-full">
-            <h1 className="text-slate-900 font-black text-sm tracking-widest uppercase leading-none">NSB1 School</h1>
+            <h1 className="text-slate-900 font-black text-sm tracking-widest uppercase leading-none">Demo School</h1>
             <p className="text-teal-600 font-black text-[10px] tracking-[0.3em] uppercase mt-1">Faculty Hub</p>
           </div>
         </div>
@@ -1249,6 +1327,10 @@ export default function TeacherDashboard({
               { id: 'timetable', label: 'Time Table', icon: Calendar },
               { id: 'my-attendance', label: 'My Attendance', icon: MapPin },
               { id: 'my-pay', label: 'My Pay', icon: Wallet },
+              { id: 'quiz', label: 'Quizzes', icon: ClipboardList, color: 'text-amber-600' },
+              { id: 'ai_paper', label: 'AI Paper', icon: Sparkles, color: 'text-indigo-600' },
+              { id: 'notices', label: 'Notice Board', icon: Megaphone },
+              { id: 'calendar', label: 'Calendar', icon: CalendarDays },
               { id: 'settings', label: 'Settings', icon: Sparkles }
             ].map((item) => (
               <button
@@ -1308,8 +1390,8 @@ export default function TeacherDashboard({
         <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6 z-30 relative font-sans">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3">
-              <img src="/logo.png" alt="NSB1 Logo" className="h-14 w-auto object-contain sm:block hidden" referrerPolicy="no-referrer" />
-              <h2 className="text-3xl font-black text-slate-900 tracking-tight sm:block hidden select-none">NSB1 School</h2>
+              <img src="/logo.png" alt="Demo School Logo" className="h-14 w-auto object-contain sm:block hidden" referrerPolicy="no-referrer" />
+              <h2 className="text-3xl font-black text-slate-900 tracking-tight sm:block hidden select-none">Demo School</h2>
             </div>
             
             {/* Real-time active period locator */}
@@ -1367,7 +1449,9 @@ export default function TeacherDashboard({
               className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-full transition-all flex items-center justify-center text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900"
               title="Toggle Dark/Light Mode"
             >
-              {darkTheme ? <Sun size={15} className="text-amber-500 animate-pulse" /> : <Moon size={15} />}
+              <span key={String(darkTheme)} className="animate-theme-pop inline-flex">
+                {darkTheme ? <Sun size={15} className="text-amber-500" /> : <Moon size={15} />}
+              </span>
             </button>
 
             {/* Notification Bell Dropdown */}
@@ -3715,7 +3799,7 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
         <tbody>${rows}</tbody>
         <tfoot><tr><td colspan="2">Total Percentage</td><td class="c">${pct}%</td></tr></tfoot>
       </table>
-      <div class="foot"><span>NSB1 School — Result Card</span><span>Date: ${new Date().toLocaleDateString()}</span></div>
+      <div class="foot"><span>Demo School — Result Card</span><span>Date: ${new Date().toLocaleDateString()}</span></div>
     </div>
     <script>window.onload=function(){setTimeout(function(){window.print();},300);};</script>
   </body></html>`;
@@ -4259,12 +4343,16 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
               </select>
             </div>
 
-            <div className="bg-gradient-to-br from-slate-900 via-teal-900 to-slate-900 rounded-2xl shadow-xl shadow-teal-100 p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5 overflow-hidden relative">
-              <div className="absolute -top-16 -right-16 w-64 h-64 bg-amber-400/20 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="bg-gradient-to-br from-slate-900 via-teal-900 to-slate-900 animate-gradient rounded-2xl shadow-xl shadow-teal-100 p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5 overflow-hidden relative animate-slide-up">
+              <div className="absolute -top-16 -right-16 w-64 h-64 bg-amber-400/20 rounded-full blur-3xl pointer-events-none animate-float"></div>
               <div className="relative z-10">
                 <p className="text-[10px] font-black uppercase tracking-[0.3em] text-teal-300 mb-1">Payslip · {monthLabel(myPayslip.year, myPayslip.month)}</p>
                 <h3 className="text-2xl font-black text-white tracking-tight uppercase">{teacherProfile?.name || userSession.name}</h3>
                 <p className="text-xs text-teal-200 font-bold uppercase tracking-widest mt-1">{teacherProfile?.subject || teacherSubject}</p>
+                <p className="text-[10px] text-teal-300/80 font-bold uppercase tracking-widest mt-1.5 flex items-center gap-1.5">
+                  <CalendarClock size={12} />
+                  Tenure: {salaryHistory.tenureYears} Saal {salaryHistory.tenureRemMonths} Mahine · Since {salaryHistory.startLabel}
+                </p>
               </div>
               <div className="relative z-10 text-right">
                 <p className="text-[10px] font-black uppercase tracking-widest text-amber-300">Net Payable</p>
@@ -4300,6 +4388,108 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
               </div>
             </div>
 
+            {/* ========== COMPLETE SALARY HISTORY — pura hisab, join se aaj tak ========== */}
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm animate-slide-up">
+              <div className="px-5 py-4 bg-gradient-to-r from-teal-600 via-teal-500 to-teal-600 animate-gradient flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CalendarDays size={16} className="text-white" />
+                  <div>
+                    <h3 className="text-xs font-black text-white uppercase tracking-widest">Complete Salary History</h3>
+                    <p className="text-[10px] text-teal-100 font-bold uppercase tracking-widest mt-0.5">
+                      {salaryHistory.startLabel} se {salaryHistory.monthsCount} mahine ka pura hisab-e-tankhwah
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-[9px] font-black text-teal-100 uppercase tracking-widest">Service Tenure</p>
+                  <p className="text-lg font-black text-white tracking-tight leading-none">
+                    {salaryHistory.tenureYears}<span className="text-xs"> saal</span> {salaryHistory.tenureRemMonths}<span className="text-xs"> mahine</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Lifetime Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 bg-slate-50 border-b border-slate-100">
+                {[
+                  { label: 'Total Earned (Net)', val: formatPKR(salaryHistory.totalNet), color: 'text-slate-900' },
+                  { label: 'Total Paid', val: formatPKR(salaryHistory.totalPaid), color: 'text-teal-600' },
+                  { label: 'Pending', val: formatPKR(salaryHistory.totalPending), color: 'text-rose-600' },
+                  { label: 'Avg / Month', val: formatPKR(salaryHistory.avgMonthly), color: 'text-amber-600' },
+                ].map((st, i) => (
+                  <motion.div
+                    key={st.label}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.08, duration: 0.35 }}
+                    className="bg-white border border-slate-200 rounded-xl p-3 text-center shadow-sm"
+                  >
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{st.label}</p>
+                    <p className={`text-sm font-black tabular-nums mt-1 ${st.color}`}>{st.val}</p>
+                  </motion.div>
+                ))}
+              </div>
+
+              {/* Month-wise table */}
+              <div className="overflow-x-auto max-h-96">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-100 sticky top-0 z-10">
+                    <tr>
+                      {['Month', 'P', 'L', 'A', 'Gross', 'Net Pay', 'Status'].map(h => (
+                        <th key={h} className="px-3 py-2.5 text-[9px] font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {salaryHistory.slips.map((s, i) => {
+                      const gross = s.baseSalary + s.presentBonus + s.allowances;
+                      const isCurrent = s.year === myPayslip.year && s.month === myPayslip.month;
+                      return (
+                        <tr
+                          key={`${s.teacherId}_${s.year}_${s.month}`}
+                          className={`border-t border-slate-100 ${isCurrent ? 'bg-amber-50/60' : i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-teal-50/60 transition-colors`}
+                        >
+                          <td className="px-3 py-2 text-xs font-black text-slate-800 whitespace-nowrap">
+                            {monthLabel(s.year, s.month)}{isCurrent ? ' ←' : ''}
+                          </td>
+                          <td className="px-3 py-2 text-xs font-bold text-teal-600 tabular-nums">{s.presentDays + s.lateDays}</td>
+                          <td className="px-3 py-2 text-xs font-bold text-amber-600 tabular-nums">{s.lateDays}</td>
+                          <td className="px-3 py-2 text-xs font-bold text-rose-600 tabular-nums">{s.absentDays}</td>
+                          <td className="px-3 py-2 text-xs font-bold text-slate-600 tabular-nums whitespace-nowrap">{formatPKR(gross)}</td>
+                          <td className="px-3 py-2 text-xs font-black text-slate-900 tabular-nums whitespace-nowrap">{formatPKR(s.netPay)}</td>
+                          <td className="px-3 py-2">
+                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest whitespace-nowrap ${
+                              s.paid ? 'bg-teal-100 text-teal-700' : 'bg-amber-100 text-amber-700'
+                            }`}>
+                              {s.paid ? `PAID${s.paidDate ? ' · ' + s.paidDate : ''}` : 'PENDING'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {salaryHistory.slips.length === 0 && (
+                      <tr><td colSpan={7} className="px-3 py-6 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">Koi salary record nahi mila</td></tr>
+                    )}
+                  </tbody>
+                  <tfoot className="bg-slate-900 text-white sticky bottom-0">
+                    <tr>
+                      <td className="px-3 py-2.5 text-[10px] font-black uppercase tracking-widest" colSpan={4}>Total ({salaryHistory.monthsCount} months)</td>
+                      <td className="px-3 py-2.5 text-[10px] font-black tabular-nums whitespace-nowrap">{formatPKR(salaryHistory.totalNet + salaryHistory.slips.reduce((a, s) => a + s.lateDeduction + s.absentDeduction + s.fixedDeductions, 0))}</td>
+                      <td className="px-3 py-2.5 text-[11px] font-black text-amber-400 tabular-nums whitespace-nowrap">{formatPKR(salaryHistory.totalNet)}</td>
+                      <td className="px-3 py-2.5 text-[9px] font-bold text-slate-300 uppercase tracking-widest">
+                        {salaryHistory.totalPending > 0 ? `${formatPKR(salaryHistory.totalPending)} pending` : 'Sab Paid ✓'}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex flex-wrap gap-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                <span>📍 Present+Late total: <b className="text-teal-600">{salaryHistory.totalPresent} din</b></span>
+                <span>⚠️ Absent total: <b className="text-rose-600">{salaryHistory.totalAbsent} din</b></span>
+                <span>🏢 Started: <b className="text-slate-700">{salaryHistory.startLabel}</b></span>
+              </div>
+            </div>
+
             <button
               onClick={printPayslip}
               className="w-full sm:w-auto px-6 py-3.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg shadow-teal-200 transition-all flex items-center justify-center gap-2 cursor-pointer"
@@ -4307,6 +4497,28 @@ Total: ${totalObtained}/${totalMax} (${overallPct}%). Status: ${overallPct >= 40
               <Printer size={16} /> Print / Save Payslip (PDF)
             </button>
           </div>
+        )}
+        {/* ========== ONLINE QUIZZES ========== */}
+        {activeTab === 'quiz' && (
+          <div className="bg-white/40 rounded-2xl p-2 sm:p-4">
+            <QuizModule userSession={userSession} students={students} classes={classes} />
+          </div>
+        )}
+        {/* ========== AI PAPER GENERATOR ========== */}
+        {activeTab === 'ai_paper' && (
+          <div className="bg-white/40 rounded-2xl p-2 sm:p-4">
+            <AiPaperGenerator userSession={userSession} classes={classes} />
+          </div>
+        )}
+        {/* ========== NOTICE BOARD ========== */}
+        {activeTab === 'notices' && (
+          <div className="bg-white/40 rounded-2xl p-2 sm:p-4">
+            <NoticeBoard userSession={userSession} />
+          </div>
+        )}
+        {/* ========== SCHOOL CALENDAR ========== */}
+        {activeTab === 'calendar' && (
+          <EventsCalendar userSession={userSession} />
         )}
         {/* ========== SETTINGS TAB (CHANGE ID/PASSWORD) ========== */}
         {/* ========== FEES & FINANCIAL HUB PANEL ========== */}
@@ -4398,6 +4610,8 @@ const sRoll = student?.rollNumber ? ('Roll #' + student.rollNumber) : 'Student R
 
         {activeTab === 'settings' && (
           <div id="panel-teacher-settings" className="space-y-8 animate-fade-in bg-slate-50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 shadow-inner">
+            <AiSettingsSection />
+
             <div className="bg-white rounded-xl p-8 border border-slate-200 shadow-sm border-t-4 border-t-teal-600">
               <div className="flex items-center gap-3 mb-6">
                 <div className="p-2 bg-teal-50 rounded-xl border border-teal-100">

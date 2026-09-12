@@ -4,7 +4,14 @@ import { listChanged } from '../lib/dataUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote, Wallet, MapPin, Navigation, Coins, CalendarClock, LocateFixed } from 'lucide-react';
+import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote, Wallet, MapPin, Navigation, Coins, CalendarClock, LocateFixed, Megaphone } from 'lucide-react';
+import AnalyticsTab from './AnalyticsTab';
+import NoticeBoard from './NoticeBoard';
+import EventsCalendar from './EventsCalendar';
+import CertificateTab from './CertificateTab';
+import AiPaperGenerator from './AiPaperGenerator';
+import AiSettingsSection from './AiSettingsSection';
+import AttendanceSettingsSection from './AttendanceSettingsSection';
 import { getPeriodStatus, getStatusColor } from '../lib/periodUtils';
 import { addNotification, getNotifications, saveNotifications, PortalNotification } from '../lib/notificationUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell } from 'recharts';
@@ -132,7 +139,7 @@ interface PrincipalDashboardProps {
   pushLocalToCloud: () => Promise<void>;
 }
 
-type PrincipalTabType = 'dashboard' | 'management_hub' | 'timetable' | 'alerts' | 'settings' | 'registers' | 'monthly_report' | 'fees' | 'teacher_pay';
+type PrincipalTabType = 'dashboard' | 'management_hub' | 'timetable' | 'alerts' | 'settings' | 'registers' | 'monthly_report' | 'fees' | 'teacher_pay' | 'analytics' | 'notices' | 'calendar' | 'certificates' | 'ai_paper';
 type CoordinatorTabType = PrincipalTabType;
 type TabType = PrincipalTabType | CoordinatorTabType;
 
@@ -188,7 +195,7 @@ export default function PrincipalDashboard({
 }: PrincipalDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     const saved = safeStorage.getItem('acadamis_active_tab');
-    const valid: TabType[] = ['dashboard', 'management_hub', 'timetable', 'alerts', 'settings', 'registers', 'monthly_report', 'fees', 'teacher_pay'];
+    const valid: TabType[] = ['dashboard', 'management_hub', 'timetable', 'alerts', 'settings', 'registers', 'monthly_report', 'fees', 'teacher_pay', 'analytics', 'notices', 'calendar', 'certificates', 'ai_paper'];
     return (saved && valid.includes(saved as TabType) ? saved : 'dashboard') as TabType;
   });
 
@@ -316,7 +323,7 @@ export default function PrincipalDashboard({
       toast.error('Valid lat / lng / radius enter karein.');
       return;
     }
-    setSchoolLocationP({ lat, lng, radiusMeters: Math.max(1, Math.round(radius)), name: locName.trim() || 'NSB1 Academy' });
+    setSchoolLocationP({ lat, lng, radiusMeters: Math.max(1, Math.round(radius)), name: locName.trim() || 'Demo Academy' });
     setShowLocSaved(true);
     setTimeout(() => setShowLocSaved(false), 2500);
     toast.success('School location updated — teachers ka GPS radius ab naye coordinates se check hoga.');
@@ -1036,7 +1043,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
       const className = sClass ? `${sClass.className} - ${sClass.section}` : 'N/A';
       
       const periodText = monthsText ? ` for ${monthsText}` : ` for ${month}`;
-      const template = `Greetings! We have received a payment of PKR ${totalAmount.toLocaleString()}${periodText} (${collectedCategories.join(', ')}) from ${studentName} (${className}). Your remaining balance is PKR ${totalPending.toLocaleString()}. Thank you for your cooperation. NSB1 School.`;
+      const template = `Greetings! We have received a payment of PKR ${totalAmount.toLocaleString()}${periodText} (${collectedCategories.join(', ')}) from ${studentName} (${className}). Your remaining balance is PKR ${totalPending.toLocaleString()}. Thank you for your cooperation. Demo School.`;
       
       const phone = studentObj.parentPhone.replace(/\D/g, '');
       let countryCodePhone = phone;
@@ -1073,7 +1080,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
     const classId = studentObj?.classId;
     const sClass = classId ? classes.find(c => c.id === classId) : null;
     const className = sClass ? `${sClass.className} - ${sClass.section}` : 'N/A';
-    const template = `Greetings! We have received a payment of PKR ${totalAmount.toLocaleString()}${periodText ? ` for ${periodText}` : ''} (${categoriesText}) from ${studentObj.name} (${className}). Your remaining balance is PKR ${totalPending.toLocaleString()}. Thank you for your cooperation. NSB1 School.`;
+    const template = `Greetings! We have received a payment of PKR ${totalAmount.toLocaleString()}${periodText ? ` for ${periodText}` : ''} (${categoriesText}) from ${studentObj.name} (${className}). Your remaining balance is PKR ${totalPending.toLocaleString()}. Thank you for your cooperation. Demo School.`;
     const phone = String(studentObj.parentPhone).replace(/\D/g, '');
     let countryCodePhone = phone;
     if (countryCodePhone.startsWith('0')) {
@@ -1499,10 +1506,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
     const className = sClass ? `${sClass.className} - ${sClass.section}` : ((student as any).class || 'N/A');
 
     const template = type === 'payment' 
-      ? `Greetings! We have received a payment of ${amount} for ${details} from ${student.name} (${className}). Your remaining balance is ${totalPending}. Thank you for your cooperation. NSB1 School.`
+      ? `Greetings! We have received a payment of ${amount} for ${details} from ${student.name} (${className}). Your remaining balance is ${totalPending}. Thank you for your cooperation. Demo School.`
       : type === 'charge'
-      ? `Greetings! A charge of ${amount} has been added for ${details} to ${student.name}'s (${className}) school account. Your total pending balance is ${totalPending}. Please contact office for details. NSB1 School.`
-      : `Greetings! This is a reminder regarding the pending school fees for ${student.name} (${className}). Total outstanding balance is ${totalPending}. Please settle the dues at your earliest convenience. NSB1 School.`;
+      ? `Greetings! A charge of ${amount} has been added for ${details} to ${student.name}'s (${className}) school account. Your total pending balance is ${totalPending}. Please contact office for details. Demo School.`
+      : `Greetings! This is a reminder regarding the pending school fees for ${student.name} (${className}). Total outstanding balance is ${totalPending}. Please settle the dues at your earliest convenience. Demo School.`;
     
     // Check both potential phone fields
     const phone = (student as any).parentPhone || (student as any).studentPhone || (student as any).phone || '';
@@ -1588,7 +1595,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
     const className = sClass ? `${sClass.className} - ${sClass.section}` : (fs?.class || 'N/A');
     const curMi = new Date().getMonth();
     const monthsText = pendingMonths.map(m => `${m.month} ${m.year}`).join(', ');
-    const template = appSettings.feeTemplate || "Dear parent, your child {name}'s fee for {month} is {amount} which is due on {date}. NSB 1 Academy.";
+    const template = appSettings.feeTemplate || "Dear parent, your child {name}'s fee for {month} is {amount} which is due on {date}. Demo Academy.";
     const date = new Date().toISOString().split('T')[0];
     let msg = template
       .replace(/{student_name}/g, student.name)
@@ -1716,7 +1723,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
     const pct = totalMax > 0 ? Math.round((totalObtained / totalMax) * 100) : 0;
     const status = pct >= 40 ? 'PASS' : 'RE-STUDY';
 
-    const template = appSettings.resultTemplate || "Greetings, Respected Parent! Result of {student_name} (Roll: {roll_number}, {class_name}) for {exam_name}:\n{subjects}\nTotal: {total_obtained}/{total_max} ({percentage}%). Status: {status}.\n- NSB 1 Academy.";
+    const template = appSettings.resultTemplate || "Greetings, Respected Parent! Result of {student_name} (Roll: {roll_number}, {class_name}) for {exam_name}:\n{subjects}\nTotal: {total_obtained}/{total_max} ({percentage}%). Status: {status}.\n- Demo Academy.";
     return template
       .replace(/{student_name}/g, student.name)
       .replace(/{roll_number}/g, student.rollNumber || 'N/A')
@@ -2816,9 +2823,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
       {/* Mobile Top Header Indicator */}
       <div id="mobile-top-bar" className={`md:hidden sticky top-0 z-30 flex items-center justify-between px-3 py-2 bg-white/95 backdrop-blur border-b border-gray-200 shadow-sm ${selectedStudentReport ? 'print:hidden' : ''}`}>
         <div className="flex items-center gap-2.5 min-w-0">
-          <img src="/logo.png" alt="NSB1 Logo" className="h-9 w-auto object-contain shrink-0" referrerPolicy="no-referrer" />
+          <img src="/logo.png" alt="Demo School Logo" className="h-9 w-auto object-contain shrink-0" referrerPolicy="no-referrer" />
           <div className="min-w-0 flex flex-col leading-none">
-            <h1 className="font-black text-gray-900 tracking-tight uppercase text-sm truncate">NSB1 School</h1>
+            <h1 className="font-black text-gray-900 tracking-tight uppercase text-sm truncate">Demo School</h1>
             <span className="text-[9px] font-black text-teal-600 uppercase tracking-[0.2em]">Principal Office</span>
           </div>
         </div>
@@ -2931,10 +2938,10 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         {/* Brand header - Minimalist */}
         <div className="p-4 pb-5 border-b border-slate-50 mb-4">
           <div className="flex items-center justify-between w-full">
-            <img src="/logo.png" alt="NSB1 Logo" className="h-16 w-auto object-contain animate-bounce-slow" referrerPolicy="no-referrer" />
+            <img src="/logo.png" alt="Demo School Logo" className="h-16 w-auto object-contain animate-bounce-slow" referrerPolicy="no-referrer" />
           </div>
           <div className="flex flex-col items-center gap-1 mt-2">
-            <h1 className="text-slate-900 font-black text-sm tracking-[0.2em] uppercase">NSB1 School</h1>
+            <h1 className="text-slate-900 font-black text-sm tracking-[0.2em] uppercase">Demo School</h1>
             <span className="text-[10px] font-black text-teal-600 uppercase tracking-[0.3em]">Principal Office</span>
           </div>
         </div>
@@ -2948,6 +2955,11 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               { id: 'timetable', label: 'Schedules', icon: Calendar },
               { id: 'monthly_report', label: 'Reports', icon: FileText, color: 'text-teal-600' },
               { id: 'teacher_pay', label: 'Teacher Pay', icon: Banknote },
+              { id: 'analytics', label: 'Analytics', icon: BarChart2, color: 'text-amber-600' },
+              { id: 'notices', label: 'Notice Board', icon: Megaphone, color: 'text-amber-600' },
+              { id: 'calendar', label: 'Calendar', icon: CalendarDays },
+              { id: 'certificates', label: 'Certificates', icon: Award },
+              { id: 'ai_paper', label: 'AI Paper', icon: Sparkles, color: 'text-indigo-600' },
               { id: 'alerts', label: 'Alert Center', icon: AlertCircle, color: 'text-rose-600' },
               { id: 'settings', label: 'Cloud Config', icon: Sparkles },
             ].map(link => {
@@ -6501,6 +6513,30 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             })()}
           </div>
         )}
+        {/* ========== ANALYTICS ========== */}
+        {activeTab === 'analytics' && (
+          <AnalyticsTab userSession={userSession} students={students} classes={classes} attendance={attendance} marks={marks} fees={fees} />
+        )}
+        {/* ========== NOTICE BOARD ========== */}
+        {activeTab === 'notices' && (
+          <div className="bg-white/40 rounded-2xl p-2 sm:p-4">
+            <NoticeBoard userSession={userSession} />
+          </div>
+        )}
+        {/* ========== SCHOOL CALENDAR ========== */}
+        {activeTab === 'calendar' && (
+          <EventsCalendar userSession={userSession} />
+        )}
+        {/* ========== CERTIFICATES + EXPORT ========== */}
+        {activeTab === 'certificates' && (
+          <CertificateTab userSession={userSession} students={students} classes={classes} attendance={attendance} fees={fees} />
+        )}
+        {/* ========== AI PAPER GENERATOR ========== */}
+        {activeTab === 'ai_paper' && (
+          <div className="bg-white/40 rounded-2xl p-2 sm:p-4">
+            <AiPaperGenerator userSession={userSession} classes={classes} />
+          </div>
+        )}
         {/* ========== TEACHER PAY & GPS ATTENDANCE MANAGER ========== */}
         {activeTab === 'teacher_pay' && (
           <div id="panel-principal-teacher-pay" className="space-y-8 animate-fade-in bg-teal-50/50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-teal-100 shadow-inner">
@@ -6666,8 +6702,37 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
         {/* end teacher_pay panel */}
         {/* ========== SETTINGS & CONFIGURATION PORTAL ========== */}
         {activeTab === 'settings' && (
-          <div id="panel-principal-settings" className="space-y-8 animate-fade-in font-sans bg-slate-50 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 shadow-inner">
+          <div id="panel-principal-settings" className="space-y-8 animate-fade-in font-sans bg-slate-50 dark:bg-slate-900/40 p-4 sm:p-6 -mx-4 sm:-mx-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-inner">
+
+            {/* ===== Settings Hero Banner ===== */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-teal-600 via-teal-600 to-slate-900 p-6 text-white shadow-xl ring-1 ring-white/10">
+              <div aria-hidden className="pointer-events-none absolute -top-20 -right-10 w-72 h-72 rounded-full bg-white/10 blur-3xl" />
+              <div aria-hidden className="pointer-events-none absolute -bottom-24 -left-10 w-72 h-72 rounded-full bg-emerald-400/20 blur-3xl" />
+              <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-white/15 backdrop-blur rounded-2xl ring-1 ring-white/20">
+                    <span className="text-2xl leading-none">⚙️</span>
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-black uppercase tracking-tight">School Settings &amp; Configuration</h2>
+                    <p className="text-xs text-teal-100/90">AI • Attendance • WhatsApp • Theme — sab kuch yahin se manage karein</p>
+                  </div>
+                </div>
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/15 backdrop-blur ring-1 ring-white/20 text-[10px] font-black uppercase tracking-widest w-fit">
+                  <HardDrive size={12} /> {isDemoMode() ? 'Local Mode' : 'Cloud Connected'}
+                </span>
+              </div>
+            </div>
             
+            {/* ========== AI (GEMINI) — Settings se key enter karein ========== */}
+            <AiSettingsSection />
+
+            {/* ========== ATTENDANCE COLLECTION — GPS SETTINGS ========== */}
+            <AttendanceSettingsSection
+              schoolLocation={schoolLocation}
+              onSaved={(loc) => setSchoolLocationP(loc)}
+            />
+
             {/* ========== MANUAL CLOUD DATA SYNC ========== */}
             <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-6 my-6">
               <div className="flex items-center gap-4">
@@ -7092,7 +7157,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                         id="btn-toggle-dark-mode"
                       >
                         <div className={`w-4 h-4 rounded-full bg-white flex items-center justify-center transition-transform ${darkTheme ? 'translate-x-6' : 'translate-x-0'}`}>
-                          {darkTheme ? <Moon size={10} className="text-teal-600" /> : <Sun size={10} className="text-amber-500" />}
+                          <span key={String(darkTheme)} className="animate-theme-pop inline-flex">
+                            {darkTheme ? <Moon size={10} className="text-teal-600" /> : <Sun size={10} className="text-amber-500" />}
+                          </span>
                         </div>
                       </button>
                     </div>
@@ -7276,8 +7343,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                             const val = e.target.value;
                             let newTpl = "";
                             if (val === "short") newTpl = "Reminder: {total_pending} pending for {student_name}. Please settle soon. - Principal.";
-                            else if (val === "standard") newTpl = "Greetings! NSB1 Reminder: Guardian of {student_name}. Pending balance: {total_pending}. Kindly settle today. Thank you.";
-                            else if (val === "urgent") newTpl = "🚨 URGENT: {total_pending} pending for {student_name}. Pay today to avoid portal suspension. - Principal NSB1.";
+                            else if (val === "standard") newTpl = "Greetings! Demo School Reminder: Guardian of {student_name}. Pending balance: {total_pending}. Kindly settle today. Thank you.";
+                            else if (val === "urgent") newTpl = "🚨 URGENT: {total_pending} pending for {student_name}. Pay today to avoid portal suspension. - Principal Demo School.";
                             
                             if (newTpl) {
                               updateSetting('feeTemplate', newTpl);
@@ -7336,9 +7403,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           onChange={(e) => {
                             const val = e.target.value;
                             let newTpl = "";
-                            if (val === "standard") newTpl = "Greetings, Respected Parent! Result of {student_name} (Roll: {roll_number}, {class_name}) for {exam_name}:\n{subjects}\nTotal: {total_obtained}/{total_max} ({percentage}%). Status: {status}.\n- NSB 1 Academy.";
-                            else if (val === "detailed") newTpl = "Assalam-o-Alaikum! {exam_name} RESULT of {student_name} (Roll: {roll_number}, {class_name}):\n{subjects}\nGRAND TOTAL: {total_obtained} out of {total_max} ({percentage}%)\nRemarks: {status}\nBest regards, NSB 1 Academy.";
-                            else if (val === "short") newTpl = "{exam_name} result {student_name}: {percentage}% ({status}). Total {total_obtained}/{total_max}. NSB 1 Academy.";
+                            if (val === "standard") newTpl = "Greetings, Respected Parent! Result of {student_name} (Roll: {roll_number}, {class_name}) for {exam_name}:\n{subjects}\nTotal: {total_obtained}/{total_max} ({percentage}%). Status: {status}.\n- Demo Academy.";
+                            else if (val === "detailed") newTpl = "Assalam-o-Alaikum! {exam_name} RESULT of {student_name} (Roll: {roll_number}, {class_name}):\n{subjects}\nGRAND TOTAL: {total_obtained} out of {total_max} ({percentage}%)\nRemarks: {status}\nBest regards, Demo Academy.";
+                            else if (val === "short") newTpl = "{exam_name} result {student_name}: {percentage}% ({status}). Total {total_obtained}/{total_max}. Demo Academy.";
                             
                             if (newTpl) {
                               updateSetting('resultTemplate', newTpl);

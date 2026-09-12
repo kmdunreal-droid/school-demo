@@ -1,5 +1,5 @@
 -- =============================================================
--- SUPABASE SCHEMA for NSB1 School (records table)
+-- SUPABASE SCHEMA for Demo School (records table)
 -- Isse Supabase Dashboard → SQL Editor mein run karein (1 baar).
 -- Phir data migrate karne ke liye: node scripts/migrate-neon-to-supabase.cjs
 -- =============================================================

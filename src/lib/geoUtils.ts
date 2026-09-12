@@ -9,7 +9,7 @@ export const DEFAULT_SCHOOL_LOCATION: SchoolLocation = {
   lat: 24.8607,
   lng: 67.0011,
   radiusMeters: 500,
-  name: 'NSB1 Academy (Karachi)',
+  name: 'Demo Academy (Karachi)',
 };
 
 export interface GeoPosition {

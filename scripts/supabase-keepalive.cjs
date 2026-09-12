@@ -12,7 +12,7 @@
  *
  * Windows Task Scheduler (har hafta auto chalane ke liye):
  *   1) Win+R → "taskchd.msc" → "Create Basic Task..."
- *   2) Name: "NSB1 Supabase Keepalive"
+ *   2) Name: "Demo School Supabase Keepalive"
  *   3) Trigger: "Weekly" → koi bhi din, time choose karein
  *   4) Action: "Start a program"
  *      Program:  C:\Program Files\nodejs\node.exe

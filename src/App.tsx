@@ -3,11 +3,12 @@ import { Toaster, toast } from 'sonner';
 import { Download, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { sbQueueWrite, sbQueueDelete, flushSupabase, loadAllFromSupabase, subscribeRecords } from './lib/supabaseSync';
-import { Teacher, Student, Coordinator, Class, TimetableEntry, Attendance, Mark, UserSession, FeeRecord, AppSettings, StudentFeeData, Assignment } from './types';
+import { Teacher, Student, Coordinator, Class, TimetableEntry, Attendance, Mark, UserSession, FeeRecord, AppSettings, StudentFeeData, Assignment, Notice, SchoolEvent, Quiz, QuizAttempt, PeriodAttendance } from './types';
 import { 
   INITIAL_TEACHERS, 
   INITIAL_CLASSES, 
-  INITIAL_STUDENTS, 
+  INITIAL_STUDENTS,
+  INITIAL_PERIOD_ATTENDANCE, 
   INITIAL_TIMETABLE, 
   INITIAL_ATTENDANCE, 
   INITIAL_MARKS,
@@ -62,6 +63,10 @@ export default function App() {
   useEffect(() => {
     const handleThemeToggle = () => {
       setDarkTheme(safeStorage.getItem('acadamis_dark_theme') === 'true');
+      // Smooth theme-switch animation — 0.7s tak global color transition
+      const el = document.documentElement;
+      el.classList.add('theme-anim');
+      window.setTimeout(() => el.classList.remove('theme-anim'), 700);
     };
     window.addEventListener('acadamis_toggle_theme', handleThemeToggle);
     return () => window.removeEventListener('acadamis_toggle_theme', handleThemeToggle);
@@ -86,6 +91,10 @@ export default function App() {
 
   const [attendance, setAttendance] = useState<Attendance[]>(() => 
     safeParse('acadamis_attendance', INITIAL_ATTENDANCE)
+  );
+
+  const [periodAttendance, setPeriodAttendance] = useState<PeriodAttendance[]>(() => 
+    safeParse('acadamis_period_attendance', INITIAL_PERIOD_ATTENDANCE)
   );
 
   const [marks, setMarks] = useState<Mark[]>(() => 
@@ -120,8 +129,8 @@ export default function App() {
   const [appSettings, setAppSettings] = useState<AppSettings>(() => 
     safeParse('acadamis_app_settings', {
       absentTemplate: "Greetings, Respected Parent! We noticed that your child {student_name} (Roll: {roll_number}) has been marked ABSENT on date {date}. Kindly clarify the reason or contact the school office. Principal.",
-      feeTemplate: "Dear parent, your child {name}'s fee for {month} is {amount} which is due on {date}. NSB 1 Academy.",
-      resultTemplate: "Greetings, Respected Parent! Result of {student_name} (Roll: {roll_number}, {class_name}) for {exam_name}:\n{subjects}\nTotal: {total_obtained}/{total_max} ({percentage}%). Status: {status}.\n- NSB 1 Academy.",
+      feeTemplate: "Dear parent, your child {name}'s fee for {month} is {amount} which is due on {date}. Demo Academy.",
+      resultTemplate: "Greetings, Respected Parent! Result of {student_name} (Roll: {roll_number}, {class_name}) for {exam_name}:\n{subjects}\nTotal: {total_obtained}/{total_max} ({percentage}%). Status: {status}.\n- Demo Academy.",
       whatsAppAutoFee: true,
       whatsAppAutoAbsence: true,
       whatsAppAutoResult: false,
@@ -177,7 +186,7 @@ export default function App() {
       });
     } else {
       toast.info(
-        "To install NSB 1 ACADEMY, click the install icon (desktop) in your browser's address bar or select 'Add to Home Screen' from the browser menu (e.g., Safari iOS Share menu).",
+        "To install DEMO ACADEMY, click the install icon (desktop) in your browser's address bar or select 'Add to Home Screen' from the browser menu (e.g., Safari iOS Share menu).",
         { duration: 6000 }
       );
     }
@@ -214,6 +223,10 @@ export default function App() {
   const prevFeeStudents = useRef<string>('');
   const prevAppSettings = useRef<string>('');
   const prevAssignments = useRef<string>('');
+  const prevNotices = useRef<string>('');     // notices collection
+  const prevEvents = useRef<string>('');        // school_events collection
+  const prevQuizzes = useRef<string>('');       // quizzes collection
+  const prevQuizAttempts = useRef<string>('');  // quiz_attempts collection
 
   // --- QUEUED SUPABASE WRITER ---
   // Har write/delete Supabase queue mein jata hai aur debounce ke baad batched
@@ -996,7 +1009,7 @@ export default function App() {
                 </div>
               </div>
               <div className="bg-slate-50 p-4 text-center border-t border-slate-100">
-                <p className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em]">NSB1 School Management System</p>
+                <p className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em]">Demo School Management System</p>
               </div>
             </motion.div>
           </div>
@@ -1063,6 +1076,8 @@ export default function App() {
           setTimetable={setTimetable}
           attendance={attendance}
           setAttendance={setAttendance}
+          periodAttendance={periodAttendance}
+          setPeriodAttendance={setPeriodAttendance}
           marks={marks}
           setMarks={setMarks}
           fees={fees}

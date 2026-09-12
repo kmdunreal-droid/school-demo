@@ -1,4 +1,4 @@
-import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, FeeRecord, TeacherPayConfig, SchoolLocation } from './types';
+import { Teacher, Student, Class, TimetableEntry, Attendance, Mark, FeeRecord, TeacherPayConfig, SchoolLocation, PeriodAttendance } from './types';
 
 export const INITIAL_TEACHERS: Teacher[] = [
   {
@@ -489,6 +489,34 @@ export const INITIAL_ATTENDANCE: Attendance[] = [
   { id: 'at10', studentId: 's5', date: '2026-06-09', status: 'present' },
 ];
 
+// Period-wise attendance — har period ka alag record (June 8 & 9, 2026 backfill)
+export const INITIAL_PERIOD_ATTENDANCE: PeriodAttendance[] = [
+  // Grade 10-A (c1) — Monday, June 8, 2026
+  { id: 'pa1', studentId: 's1', date: '2026-06-08', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Mathematics', classId: 'c1', status: 'present', markedBy: 't1' },
+  { id: 'pa2', studentId: 's1', date: '2026-06-08', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'Science', classId: 'c1', status: 'present', markedBy: 't2' },
+  { id: 'pa3', studentId: 's1', date: '2026-06-08', period: 'Period 3', periodTime: '11:00 AM - 12:00 PM', subject: 'English Literature', classId: 'c1', status: 'late', markedBy: 't3' },
+  { id: 'pa4', studentId: 's2', date: '2026-06-08', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Mathematics', classId: 'c1', status: 'present', markedBy: 't1' },
+  { id: 'pa5', studentId: 's2', date: '2026-06-08', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'Science', classId: 'c1', status: 'present', markedBy: 't2' },
+  { id: 'pa6', studentId: 's2', date: '2026-06-08', period: 'Period 3', periodTime: '11:00 AM - 12:00 PM', subject: 'English Literature', classId: 'c1', status: 'present', markedBy: 't3' },
+  { id: 'pa7', studentId: 's3', date: '2026-06-08', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Mathematics', classId: 'c1', status: 'absent', markedBy: 't1' },
+  { id: 'pa8', studentId: 's3', date: '2026-06-08', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'Science', classId: 'c1', status: 'absent', markedBy: 't2' },
+  { id: 'pa9', studentId: 's3', date: '2026-06-08', period: 'Period 3', periodTime: '11:00 AM - 12:00 PM', subject: 'English Literature', classId: 'c1', status: 'absent', markedBy: 't3' },
+
+  // Grade 11-B (c2) — Monday, June 8, 2026
+  { id: 'pa10', studentId: 's4', date: '2026-06-08', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Science', classId: 'c2', status: 'present', markedBy: 't2' },
+  { id: 'pa11', studentId: 's4', date: '2026-06-08', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'English Literature', classId: 'c2', status: 'present', markedBy: 't3' },
+  { id: 'pa12', studentId: 's5', date: '2026-06-08', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Science', classId: 'c2', status: 'present', markedBy: 't2' },
+  { id: 'pa13', studentId: 's5', date: '2026-06-08', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'English Literature', classId: 'c2', status: 'late', markedBy: 't3' },
+
+  // Grade 10-A (c1) — Tuesday, June 9, 2026
+  { id: 'pa14', studentId: 's1', date: '2026-06-09', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Science', classId: 'c1', status: 'present', markedBy: 't2' },
+  { id: 'pa15', studentId: 's1', date: '2026-06-09', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'Mathematics', classId: 'c1', status: 'present', markedBy: 't1' },
+  { id: 'pa16', studentId: 's2', date: '2026-06-09', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Science', classId: 'c1', status: 'absent', markedBy: 't2' },
+  { id: 'pa17', studentId: 's2', date: '2026-06-09', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'Mathematics', classId: 'c1', status: 'absent', markedBy: 't1' },
+  { id: 'pa18', studentId: 's3', date: '2026-06-09', period: 'Period 1', periodTime: '08:30 AM - 09:30 AM', subject: 'Science', classId: 'c1', status: 'present', markedBy: 't2' },
+  { id: 'pa19', studentId: 's3', date: '2026-06-09', period: 'Period 2', periodTime: '09:30 AM - 10:30 AM', subject: 'Mathematics', classId: 'c1', status: 'present', markedBy: 't1' },
+];
+
 export const INITIAL_MARKS: Mark[] = [
   // Jane Doe (s1 - Grade 10)
   { id: 'm1', studentId: 's1', subject: 'Mathematics', examType: 'Unit Test', marksObtained: 22, maxMarks: 25 },
@@ -557,6 +585,6 @@ export const INITIAL_SCHOOL_LOCATION: SchoolLocation = {
   lat: 24.8607,
   lng: 67.0011,
   radiusMeters: 500,
-  name: 'NSB1 Academy (Karachi)',
+  name: 'Demo Academy (Karachi)',
 };
 

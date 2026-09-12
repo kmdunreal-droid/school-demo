@@ -24,5 +24,112 @@
   .animate-fade-in {
     animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
+
+  /* ===== THEME ANIMATIONS ===== */
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(18px) scale(0.99);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  @keyframes popIn {
+    0% {
+      opacity: 0;
+      transform: scale(0.85);
+    }
+    60% {
+      transform: scale(1.04);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .animate-pop {
+    animation: popIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  }
+
+  @keyframes floatY {
+    0%, 100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+  }
+
+  .animate-float {
+    animation: floatY 5s ease-in-out infinite;
+  }
+
+  @keyframes gradientShift {
+    0%, 100% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+  }
+
+  .animate-gradient {
+    background-size: 220% 220%;
+    animation: gradientShift 6s ease infinite;
+  }
+
+  /* Dark mode ka animated aurora background — dheemi gradient saans */
+  @keyframes themeAurora {
+    0%, 100% {
+      background-position: 0% 0%;
+    }
+    50% {
+      background-position: 100% 100%;
+    }
+  }
+
+  html.dark body {
+    background-image: linear-gradient(135deg, #020617 0%, #0f172a 30%, #042f2e 55%, #0f172a 75%, #020617 100%);
+    background-color: #020617;
+    background-attachment: fixed;
+    background-size: 280% 280%;
+    animation: themeAurora 24s ease-in-out infinite;
+  }
+
+  /* Theme toggle par smooth color transition (App.tsx 0.7s ke liye class lagata hai) */
+  html.theme-anim,
+  html.theme-anim *,
+  html.theme-anim *::before,
+  html.theme-anim *::after {
+    transition: background-color 0.5s ease, color 0.4s ease, border-color 0.5s ease, fill 0.5s ease, stroke 0.5s ease !important;
+    transition-delay: 0s !important;
+  }
+
+  /* Theme toggle button ka pop feedback */
+  @keyframes themePop {
+    0% {
+      transform: rotate(0deg) scale(1);
+    }
+    50% {
+      transform: rotate(180deg) scale(1.35);
+    }
+    100% {
+      transform: rotate(360deg) scale(1);
+    }
+  }
+
+  .animate-theme-pop {
+    animation: themePop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
 }
+
 

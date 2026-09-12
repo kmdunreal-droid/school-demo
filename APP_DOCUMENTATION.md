@@ -1,4 +1,4 @@
-# NSB1 School Management System - Technical Documentation
+# Demo School Management System - Technical Documentation
 
 ## Overview
 A comprehensive school management PWA built with React 19, TypeScript, Vite, Supabase (PostgreSQL), and Tailwind CSS. Features role-based portals for Principal, Coordinator, Teacher, and Student with real-time cross-device synchronization.
@@ -349,5 +349,5 @@ testSupabaseConnection().then(console.log);
 
 ---
 
-*Generated for NSB1 School Management System v1.0*
+*Generated for Demo School Management System v1.0*
 *Last Updated: 2026*

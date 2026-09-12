@@ -70,6 +70,21 @@ export interface Attendance {
   date: string;        // YYYY-MM-DD
   status: 'present' | 'absent' | 'late' | 'leave';
   markedBy?: string;   // Teacher/Principal who marked the attendance
+  periodId?: string;   // Optional: period-wise attendance ke liye (e.g. "Period 1")
+  periodTime?: string; // Optional: period time (e.g. "09:00 AM - 10:00 AM")
+}
+
+// Period-wise attendance — har period alag record (detailed tracking ke liye)
+export interface PeriodAttendance {
+  id: string;
+  studentId: string;   // References Student.id
+  date: string;        // YYYY-MM-DD
+  period: string;      // e.g. "Period 1", "Period 2"
+  periodTime: string;  // e.g. "09:00 AM - 10:00 AM"
+  subject: string;     // period ka subject
+  classId: string;     // class id
+  status: 'present' | 'absent' | 'late' | 'leave';
+  markedBy?: string;
 }
 
 export interface FeeRecord {
@@ -237,4 +252,77 @@ export function getStudentPhoto(student?: { id?: string; name?: string; photo?: 
   }
   return '';
 }
+
+// ============================================================
+// NOTICE BOARD — announcements (Principal post, sab dekhte)
+// ============================================================
+export type NoticePriority = 'normal' | 'important' | 'urgent';
+export type NoticeAudience = 'all' | 'teachers' | 'students';
+
+export interface Notice {
+  id: string;
+  title: string;
+  message: string;
+  priority: NoticePriority;
+  audience: NoticeAudience;
+  authorName: string;
+  authorRole: string;
+  createdAt: string; // ISO
+}
+
+// ============================================================
+// SCHOOL CALENDAR & EVENTS
+// ============================================================
+export type EventType = 'holiday' | 'exam' | 'meeting' | 'event' | 'sports';
+
+export interface SchoolEvent {
+  id: string;
+  title: string;
+  date: string; // YYYY-MM-DD
+  type: EventType;
+  description?: string;
+  createdBy: string;
+  createdAt: string; // ISO
+}
+
+// ============================================================
+// QUIZ / ONLINE EXAM — teacher create, student attempt (auto-grade)
+// ============================================================
+export interface QuizQuestion {
+  id: string;
+  question: string;
+  options: string[]; // 4 options
+  correctIndex: number; // 0-3
+  marks: number;
+}
+
+export interface Quiz {
+  id: string;
+  title: string;
+  subject: string;
+  classId: string; // 'all' = sab classes
+  className?: string;
+  teacherId: string;
+  teacherName: string;
+  timeLimitMin: number;
+  totalMarks: number;
+  questions: QuizQuestion[];
+  status: 'draft' | 'published';
+  dueDate?: string;
+  createdAt: string; // ISO
+}
+
+export interface QuizAttempt {
+  id: string;
+  quizId: string;
+  quizTitle: string;
+  studentId: string;
+  studentName: string;
+  className?: string;
+  answers: Record<string, number>; // questionId -> chosenIndex
+  score: number;
+  totalMarks: number;
+  submittedAt: string; // ISO
+}
+
 

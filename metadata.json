@@ -1,6 +1,6 @@
 {
-  "name": "NSB1 School",
-  "description": "Comprehensive public landing page and school management portal for NSB1 School & Academy, featuring responsive dashboards and local storage persistence.",
+  "name": "Demo School",
+  "description": "Comprehensive public landing page and school management portal for Demo School & Academy, featuring responsive dashboards and local storage persistence.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

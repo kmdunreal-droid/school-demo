@@ -139,7 +139,7 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
         <div className="text-center space-y-4">
           <img 
             src="/logo.png" 
-            alt="NSB 1 ACADEMY" 
+            alt="DEMO ACADEMY" 
             className="mx-auto h-20 w-auto object-contain mb-2"
             referrerPolicy="no-referrer"
           />
@@ -148,7 +148,7 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
               Portal <span className="font-extrabold not-">Login</span>
             </h2>
             <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-[0.4em] text-center">
-              NSB1 School
+              Demo School
             </p>
           </div>
         </div>
@@ -218,7 +218,7 @@ export default function Login({ teachers, students, coordinators, onLogin, onBac
 
         <div className="pt-8 border-t border-slate-50 dark:border-slate-900 text-center">
             <p className="text-[10px] font-bold text-slate-300 dark:text-slate-700 uppercase tracking-widest">
-                NSB1 Digital Management Infrastructure
+                Demo School Digital Management Infrastructure
             </p>
         </div>
       </div>

@@ -13,8 +13,8 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: ['logo.png'],
         manifest: {
-          name: 'NSB1 School',
-          short_name: 'NSB1',
+          name: 'Demo School',
+          short_name: 'Demo',
           description: 'Comprehensive School Management Portal',
           start_url: '/',
           scope: '/',
