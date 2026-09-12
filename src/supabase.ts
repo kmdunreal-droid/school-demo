@@ -21,18 +21,34 @@ const SUPABASE_KEY = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string) |
 /** Demo mode = sab kuch localStorage par; koi cloud/network request nahi. */
 export const isDemoMode = (): boolean => (import.meta.env.VITE_DATA_MODE as string) === 'demo';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false,
-  },
-  realtime: {
-    params: { eventsPerSecond: 20 },
-  },
-});
-
 export const isSupabaseConfigured = () => Boolean(SUPABASE_URL && SUPABASE_KEY);
+
+/**
+ * FAILSAFE — URL/key missing par bhi app boot crash NA ho
+ * ("supabaseUrl is required" white-screen error ka ilaaj).
+ * Placeholder values se client banta hai; network calls sync layer ke
+ * try/catch mein gracefully fail hoti hain. Demo mode mein koi call nahi hoti.
+ */
+export const supabase = createClient(
+  isSupabaseConfigured() ? SUPABASE_URL : 'https://placeholder.supabase.co',
+  isSupabaseConfigured() ? SUPABASE_KEY : 'placeholder-key',
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: false,
+    },
+    realtime: {
+      params: { eventsPerSecond: 20 },
+    },
+  },
+);
+
+if (!isSupabaseConfigured()) {
+  console.warn(
+    '[Supabase] VITE_SUPABASE_URL/VITE_SUPABASE_PUBLISHABLE_KEY missing in .env — client placeholder par hai. Demo/local mode theek chalega; live sync ke liye .env set karein.',
+  );
+}
 
 /** Connection/health check — headless liye chhota select karta hai. */
 export async function testSupabaseConnection(): Promise<boolean> {
