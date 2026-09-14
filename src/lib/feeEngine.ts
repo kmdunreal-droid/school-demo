@@ -387,6 +387,79 @@ export const getAllDues = (students: StudentFeeData[]): DueEntryWithStudent[] =>
   return allDues.sort((a, b) => b.date.localeCompare(a.date));
 };
 
+// ===== ADVANCE FEE — ZYADA DI GAYI FEE AGLY MONTHS KE LIYE ADVANCE =====
+const ADV_TUITION_FEE_TYPES = /^(tuition|school|monthly)\s*(nsb\s*)?fee$/i;
+const isAdvTuition = (t?: string) => !t || ADV_TUITION_FEE_TYPES.test(String(t).trim()) || /school\s*(nsb\s*)?fee/i.test(String(t));
+
+/** Advance se kitna paisa kaunse future month par lagaya gaya (full ya partial). */
+export interface AdvanceMonthUse {
+  month: string;
+  year: number;
+  /** Is month par advance se lagaya gaya amount */
+  amount: number;
+  /** Advance lagane ke baad bhi is month kitna baqi hai (0 = month full clear) */
+  remaining: number;
+}
+
+export interface AdvanceSummary {
+  /** Current month tak bacha hua advance balance (zyada payment) */
+  advance: number;
+  /** Future months jahan advance balance lagaya gaya (full/partial) */
+  advanceMonths: AdvanceMonthUse[];
+  /** Sary months ke baad bhi carry hua advance balance */
+  remainingAfter: number;
+  currentMonthIdx: number;
+  currentYear: number;
+}
+
+/**
+ * Student ki zyada (extra) fee ka hisab:
+ * Agar kisi month ki fee se zyada pay ho jaye to wo balance "advance" ban jata hai
+ * aur age ke months ki fee khud us balance se clear hoti hai — "advance month" feature.
+ */
+export const getAdvanceSummary = (student: StudentFeeData, year: number = new Date().getFullYear()): AdvanceSummary => {
+  const now = new Date();
+  const curIdx = now.getMonth();
+  const curYear = now.getFullYear();
+  const base = Math.max(0, Number(student.monthlyFee || 0));
+  const enrollIdx = normMonthIdx(student.enrollmentMonth);
+  const isThisYear = year === curYear;
+
+  // Is year ke kaunse month tak fee due hai (current year → current month tak; purana year → December tak)
+  const lastDueIdx = isThisYear ? curIdx : (year < curYear ? 11 : -1);
+  const stIdx = isThisYear && enrollIdx >= 0 && enrollIdx <= lastDueIdx ? enrollIdx : 0;
+
+  const paidInMonth = (mi: number): number =>
+    (student.payments || [])
+      .filter(p => normMonthIdx(p.month) === mi && normMonthYear(p.month, year) === year && isAdvTuition(p.feeType))
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
+  // 1) Enrollment month → current month: jo zyada pay hua wo balance ban kar aage carry hota hai
+  let balance = 0;
+  for (let mi = stIdx; mi <= lastDueIdx; mi++) {
+    balance = Math.max(0, balance) + paidInMonth(mi) - base;
+  }
+  const advance = Math.max(0, balance);
+
+  // 2) Future months par advance lagao (full ya partial) — "advance month" feature
+  const advanceMonths: AdvanceMonthUse[] = [];
+  let remaining = advance;
+  if (isThisYear || year > curYear) {
+    const startFuture = isThisYear ? curIdx + 1 : 0;
+    for (let mi = startFuture; mi < 12; mi++) {
+      if (remaining <= 0) break;
+      const paid = paidInMonth(mi);
+      const deficit = Math.max(0, base - paid);
+      if (deficit <= 0) continue; // month already directly paid hai
+      const apply = Math.min(deficit, remaining);
+      advanceMonths.push({ month: MONTHS[mi], year, amount: apply, remaining: deficit - apply });
+      remaining -= apply;
+    }
+  }
+
+  return { advance, advanceMonths, remainingAfter: Math.max(0, remaining), currentMonthIdx: curIdx, currentYear: curYear };
+};
+
 import { safeStorage } from './safeStorage';
 
 // Persistence

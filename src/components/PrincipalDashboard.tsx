@@ -4,7 +4,7 @@ import { listChanged } from '../lib/dataUtils';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote, Wallet, MapPin, Navigation, Coins, CalendarClock, LocateFixed, Megaphone, LayoutGrid, Settings } from 'lucide-react';
+import { BarChart2, CheckCircle2, ChevronDown, ChevronUp, CreditCard, Database, Download, Edit2, LogOut, Mail, Menu, MessageSquare, Moon, Percent, Phone, Plus, PlusCircle, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Sun, Trash2, Eye, EyeOff, TrendingUp, User, Users, X, ArrowUpRight, Award, Bell, BookOpen, Calendar, CalendarDays, AlertCircle, DownloadCloud, UploadCloud, Upload, ArrowLeft, ArrowRight, Fingerprint, Send, Zap, FileText, Printer, Filter, Receipt, Clock, AlertTriangle, School, DollarSign, HardDrive, Wifi, Banknote, Wallet, MapPin, Navigation, Coins, CalendarClock, LocateFixed, Megaphone, LayoutGrid, Settings } from 'lucide-react';
 import AnalyticsTab from './AnalyticsTab';
 import NoticeBoard from './NoticeBoard';
 import EventsCalendar from './EventsCalendar';
@@ -42,6 +42,7 @@ import {
   getDueRemaining,
   getDuesByMonth,
   getAllDues,
+  getAdvanceSummary,
   MONTHS,
   Month
 } from '../lib/feeEngine';
@@ -71,7 +72,8 @@ const buildTuitionAllocation = (
   feeStudent: StudentFeeData | undefined,
   student: Student | undefined,
   amount: number,
-  year: number
+  year: number,
+  startIdxOverride?: number
 ): { month: string; year: number; amount: number }[] => {
   if (!student) return [];
   const base = Math.max(0, Number(student.baseFee ?? feeStudent?.monthlyFee ?? 0));
@@ -81,7 +83,9 @@ const buildTuitionAllocation = (
   const payments = feeStudent?.payments || [];
   const allocs: { month: string; year: number; amount: number }[] = [];
   let remaining = amount;
-  for (let mi = enrollIdx; mi < 12 && remaining > 0; mi++) {
+  const loopStart = startIdxOverride !== undefined ? startIdxOverride : enrollIdx;
+  if (loopStart > 11) return [];
+  for (let mi = Math.max(0, loopStart); mi < 12 && remaining > 0; mi++) {
     const monthName = MONTHS[mi];
     const tuitionPaid = payments
       .filter(p => {
@@ -868,6 +872,14 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
     };
 
     entries.forEach(entry => {
+      // Zyada amount (advance) → agley pending/future months mein khud spread (advance month feature)
+      const spillTuitionAdvance = (feeType: string, amountLeft: number, fromMonthIdx: number) => {
+        if (!(amountLeft > 0)) return;
+        const spillAllocs = buildTuitionAllocation(feeStudentObj, studentObj, amountLeft, year, fromMonthIdx);
+        let rem = amountLeft;
+        spillAllocs.forEach(a => { pushForMonth(feeType, a.amount, a.month, a.year); rem -= a.amount; });
+        if (rem > 0) pushForMonth(feeType, rem, month, year);
+      };
       // Tuition/School Fee → amount ko ALLOCATE karo. Normal mode: AUTO-SPREAD (purane pending
       // months pehle). TARGET-month mode (month card ke Collect se): sirf us month mein jaye +
       // us month ke pending dues/paper fund bhi amount se auto-collect hon.
@@ -921,9 +933,9 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
               remainingAfterTuition -= toDue;
             }
           }
-          // Agar kuch bhi bacha ho → selected month mein advance / extra
+          // Agar kuch bhi bacha ho → agley months mein ADVANCE (zyada fee) — advance month feature
           if (remainingAfterTuition > 0) {
-            pushForMonth(entry.feeType, remainingAfterTuition, month, year);
+            spillTuitionAdvance(entry.feeType, remainingAfterTuition, tIdx + 1);
           }
         } else {
           // --- NORMAL AUTO-SPREAD: ek amount sary pending months me khud batt jata hai ---
@@ -934,7 +946,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             allocated += a.amount;
           });
           const leftover = entry.amount - allocated;
-          if (leftover > 0) pushForMonth(entry.feeType, leftover, month, year);
+          // Zyada amount → agley months mein advance
+          if (leftover > 0) spillTuitionAdvance(entry.feeType, leftover, parseMonthKey(month, year).idx + 1);
         }
       } else if (extraFeeMode === 'charge') {
         // CHARGE mode: not immediately PAID — a PENDING entry is added to student's Dues.
@@ -1205,18 +1218,65 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
   const handleFpcPayMonth = (studentId: string | number, monthKey: string, payYear: number, amount: number, method: string) => {
     const monthName = String(monthKey).split(' ')[0] || String(monthKey);
     const today = new Date().toISOString().split('T')[0];
-    const recId = fpcMakeId();
-    setFeeStudents(prev => prev.map(fs => {
-      if (String(fs.id) !== String(studentId)) return fs;
-      return { ...fs, payments: [...(fs.payments || []), { id: recId, month: monthName, year: payYear, amount, date: today, feeType: 'School Fee' }] };
-    }));
-    setFees(prev => [{
-      id: recId, studentId: String(studentId), amount, dueDate: today, status: 'paid' as const, paidDate: today,
-      month: `${monthName} ${payYear}`, paymentMethod: method, feeType: 'School Fee', description: 'Fee Payment Center — month fee'
-    }, ...prev]);
-    const sName = students.find(s => String(s.id) === String(studentId))?.name || 'Student';
-    toast.success(`PKR ${amount.toLocaleString()} received — ${monthName} ${payYear} fee ✓ ${sName} (Receipt #${recId})`);
-    fpcNotifyWhatsApp(studentId, amount, 'School Fee', `${monthName} ${payYear}`);
+    const studentObj = students.find(s => String(s.id) === String(studentId));
+    const fsObj = feeStudents.find(fs => String(fs.id) === String(studentId));
+    const baseFee = Math.max(0, Number(studentObj?.baseFee ?? fsObj?.monthlyFee ?? 0));
+    const monthIdx = parseMonthKey(monthName, payYear).idx;
+
+    let remainingAmount = Math.max(0, Number(amount) || 0);
+    if (!(remainingAmount > 0)) { toast.error('Amount enter karein (PKR).'); return; }
+
+    const newPayments: { id: string; month: string; year: number; amount: number; date: string; feeType: string }[] = [];
+    const newFeeRecords: FeeRecord[] = [];
+    let seq = 0;
+    const pushRec = (m: string, yr: number, amt: number, desc: string) => {
+      const id = fpcMakeId(seq++);
+      newFeeRecords.push({ id, studentId: String(studentId), amount: amt, dueDate: today, status: 'paid' as const, paidDate: today, month: `${m} ${yr}`, paymentMethod: method, feeType: 'School Fee', description: desc });
+      newPayments.push({ id, month: m, year: yr, amount: amt, date: today, feeType: 'School Fee' });
+    };
+
+    // 1) Pehle is he month ka bacha hua fee bharo
+    if (monthIdx >= 0) {
+      const tuitionPaid = (fsObj?.payments || [])
+        .filter(p => {
+          const key = parseMonthKey(p.month, Number(p.year) || payYear);
+          return key.idx === monthIdx && key.year === Number(payYear) && (!p.feeType || TUITION_FEE_TYPES.test(p.feeType));
+        })
+        .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const monthRemaining = Math.max(0, baseFee - tuitionPaid);
+      if (monthRemaining > 0) {
+        const toPay = Math.min(monthRemaining, remainingAmount);
+        pushRec(monthName, payYear, toPay, 'Fee Payment Center - month fee');
+        remainingAmount -= toPay;
+      }
+    }
+
+    // 2) Zyada amount → agley pending/future months mein ADVANCE (auto-spread)
+    const advanceMonths: string[] = [];
+    if (remainingAmount > 0) {
+      const allocs = buildTuitionAllocation(fsObj, studentObj, remainingAmount, payYear, monthIdx + 1);
+      let allocated = 0;
+      allocs.forEach(a => {
+        pushRec(a.month, a.year, a.amount, 'Fee Payment Center - advance (zyada pay)');
+        advanceMonths.push(`${a.month} ${a.year}: PKR ${a.amount.toLocaleString()}`);
+        allocated += a.amount;
+      });
+      const leftover = remainingAmount - allocated;
+      if (leftover > 0) {
+        pushRec(monthName, payYear, leftover, 'Fee Payment Center - advance balance (carry)');
+        advanceMonths.push(`${monthName} ${payYear}: PKR ${leftover.toLocaleString()}`);
+      }
+      remainingAmount = 0;
+    }
+
+    setFeeStudents(prev => prev.map(fs => String(fs.id) === String(studentId) ? { ...fs, payments: [...(fs.payments || []), ...newPayments] } : fs));
+    setFees(prev => [...newFeeRecords, ...prev]);
+
+    const sName = studentObj?.name || fsObj?.name || 'Student';
+    const totalPaid = Math.max(0, Number(amount) || 0);
+    const detail = advanceMonths.length > 0 ? ` - advance: ${advanceMonths.join(' | ')}` : '';
+    toast.success(`PKR ${totalPaid.toLocaleString()} received ✓ ${sName} - ${monthName} ${payYear}${detail} (Receipt #${newFeeRecords[0].id})`);
+    fpcNotifyWhatsApp(studentId, totalPaid, 'School Fee', advanceMonths.length > 0 ? `${monthName} ${payYear} (${advanceMonths.join(', ')})` : `${monthName} ${payYear}`);
   };
 
   // Due (Paper Fund, Exam Fee, Other Fund...) collect karo — partial supported
@@ -2997,8 +3057,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   onClick={() => { handleTabChange(link.id as any); setSidebarOpen(false); }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl ${
                     isActive 
-                      ? 'text-white bg-amber-600 shadow-lg shadow-amber-200' 
-                      : 'text-slate-400 hover:text-slate-900 hover:bg-slate-50'
+                      ? 'text-white bg-gradient-to-r from-amber-500 to-amber-600 shadow-lg shadow-amber-600/40'
+                      : 'text-slate-500 bg-white/70 shadow-sm shadow-slate-400/20 hover:text-slate-900 hover:bg-slate-50 hover:shadow-md'
                   }`}
                 >
                   <Icon size={14} className={isActive ? 'text-white' : 'text-slate-300 group-hover:text-slate-500'} />
@@ -3010,7 +3070,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             {/* Install Button in Sidebar */}
             <button
               onClick={onInstallApp}
-              className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl bg-teal-50 text-teal-700 hover:bg-teal-100 mt-2 border border-teal-100"
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl bg-teal-50 text-teal-700 hover:bg-teal-100 mt-2 border border-teal-100 shadow-sm shadow-teal-500/20 hover:shadow-md hover:shadow-teal-500/30"
             >
               <Download size={14} className="text-teal-600" />
               Install App
@@ -3019,7 +3079,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
             {/* Exit System Button in Sidebar */}
             <button
               onClick={onLogout}
-              className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 mt-2 border border-rose-100"
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold uppercase tracking-[0.2em] transition-all text-left group rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 mt-2 border border-rose-100 shadow-sm shadow-rose-500/20 hover:shadow-md hover:shadow-rose-500/30"
             >
               <LogOut size={14} className="text-rose-600" />
               Exit System
@@ -3282,8 +3342,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('teachers')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'teachers' 
-                    ? 'bg-teal-600 text-white shadow-md' 
-                    : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
+                    ? 'bg-gradient-to-r from-teal-600 to-teal-500 text-white shadow-lg shadow-teal-600/40'
+                    : 'bg-gradient-to-b from-white to-slate-50 text-slate-500 border border-slate-200/70 shadow-md shadow-slate-400/20 hover:text-teal-700 hover:shadow-lg hover:shadow-teal-200/60'
                 }`}
               >
                 <Users size={14} />
@@ -3293,8 +3353,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('students')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'students' 
-                    ? 'bg-teal-600 text-white shadow-md' 
-                    : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
+                    ? 'bg-gradient-to-r from-teal-600 to-teal-500 text-white shadow-lg shadow-teal-600/40'
+                    : 'bg-gradient-to-b from-white to-slate-50 text-slate-500 border border-slate-200/70 shadow-md shadow-slate-400/20 hover:text-teal-700 hover:shadow-lg hover:shadow-teal-200/60'
                 }`}
               >
                 <Users size={14} />
@@ -3304,8 +3364,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('classes')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'classes' 
-                    ? 'bg-teal-600 text-white shadow-md' 
-                    : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
+                    ? 'bg-gradient-to-r from-teal-600 to-teal-500 text-white shadow-lg shadow-teal-600/40'
+                    : 'bg-gradient-to-b from-white to-slate-50 text-slate-500 border border-slate-200/70 shadow-md shadow-slate-400/20 hover:text-teal-700 hover:shadow-lg hover:shadow-teal-200/60'
                 }`}
               >
                 <BookOpen size={14} />
@@ -3315,8 +3375,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                 onClick={() => setManagementSubTab('coordinators')}
                 className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                   managementSubTab === 'coordinators' 
-                    ? 'bg-teal-600 text-white shadow-md' 
-                    : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
+                    ? 'bg-gradient-to-r from-teal-600 to-teal-500 text-white shadow-lg shadow-teal-600/40'
+                    : 'bg-gradient-to-b from-white to-slate-50 text-slate-500 border border-slate-200/70 shadow-md shadow-slate-400/20 hover:text-teal-700 hover:shadow-lg hover:shadow-teal-200/60'
                 }`}
               >
                 <Shield size={14} />
@@ -4187,8 +4247,8 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                   onClick={() => setFeaturesSubTab(id)}
                   className={`flex-1 min-w-[120px] py-3.5 px-4 text-xs uppercase font-black tracking-[0.2em] transition-all flex items-center justify-center gap-2 rounded-xl ${
                     featuresSubTab === id
-                      ? 'bg-teal-600 text-white shadow-md'
-                      : 'bg-white text-slate-400 hover:text-slate-900 hover:bg-slate-50'
+                      ? 'bg-gradient-to-r from-teal-600 to-teal-500 text-white shadow-lg shadow-teal-600/40'
+                      : 'bg-gradient-to-b from-white to-slate-50 text-slate-500 border border-slate-200/70 shadow-md shadow-slate-400/20 hover:text-teal-700 hover:shadow-lg hover:shadow-teal-200/60'
                   }`}
                 >
                   <Icon size={14} />
@@ -10397,13 +10457,13 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                           ))}
                           {leftover > 0 && (
                             <span className="px-2 py-0.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-[10px] font-black">
-                              Advance/Extra PKR {leftover.toLocaleString()} → {quickCollectMonth}
+                              Advance (zyada pay) PKR {leftover.toLocaleString()} - agle months mein spread hoga
                             </span>
                           )}
                         </div>
                       ) : (
                         <p className="text-[11px] font-bold text-slate-600">
-                          Koi pending month nahi mila — poora PKR {amt.toLocaleString()} {quickCollectMonth} me record hoga.
+                          Koi pending month nahi mila - poora PKR {amt.toLocaleString()} {quickCollectMonth} se aage wale months mein advance record hoga.
                         </p>
                       )}
                     </div>
@@ -10438,7 +10498,7 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
                       <button
                         key={m.v}
                         onClick={() => setQuickCollectPaymentMethod(m.v)}
-                        className={`py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wide border transition-all cursor-pointer ${quickCollectPaymentMethod === m.v ? 'bg-amber-600 border-amber-600 text-white shadow-md' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-amber-400'}`}
+                        className={`py-2.5 rounded-xl text-[11px] font-black uppercase tracking-wide border transition-all cursor-pointer ${quickCollectPaymentMethod === m.v ? 'bg-amber-600 border-amber-600 text-white shadow-lg shadow-amber-600/40' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-amber-400'}`}
                       >
                         {m.l}
                       </button>
@@ -11083,6 +11143,7 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
   onYearChange?: (year: number) => void;
   onPayDues?: () => void;
 }) {
+  const [showAdvance, setShowAdvance] = useState(false);
   const base = Math.max(0, Number(student.baseFee ?? feeStudent?.monthlyFee ?? 0));
   // Months: current (enrollment) year me enrollment month se start;
   // YEAR CHANGE karo to months dobara JANUARY se start hote hain (full year)
@@ -11148,7 +11209,7 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
     const totalRemaining = tuitionRemaining + extraPending;
     const hasData = totalPaid > 0 || extraPending > 0 || base > 0;
     const isClear = hasData && totalRemaining === 0;
-    return { m, tuitionPaid, extraByType, extraPaid, totalPaid, pendingByType, extraPending, tuitionRemaining, totalRemaining, hasData, isClear };
+    return { m, tuitionPaid, extraByType, extraPaid, totalPaid, pendingByType, extraPending, tuitionRemaining, totalRemaining, hasData, isClear, advance: Math.max(0, tuitionPaid - base) };
   });
 
   // Summary — all months combined position
@@ -11159,6 +11220,7 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
   }), { paid: 0, tuitionRemaining: 0, dues: 0 });
   const totalRemainingAll = totals.tuitionRemaining + totals.dues;
   const totalBaseAll = base * monthStats.length;
+  const advInfo = feeStudent ? getAdvanceSummary(feeStudent, year) : null;
 
   return (
     <div className="pt-2">
@@ -11206,6 +11268,59 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
         </button>
       </div>
 
+      {/* ADVANCE - zyada di gayi fee future months ke liye */}
+      {advInfo && (advInfo.advance > 0 || advInfo.advanceMonths.length > 0) && (
+        <div className="rounded-xl border border-amber-200 bg-gradient-to-r from-amber-50 via-white to-teal-50 p-3 space-y-2 mb-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-widest text-amber-600 flex items-center gap-1.5">
+                <TrendingUp size={11} /> Advance Fee - Zyada Di Gayi Fee
+              </p>
+              <p className="text-base font-black text-amber-700 flex items-center gap-2 flex-wrap">
+                PKR {advInfo.advance.toLocaleString()}
+                {advInfo.advanceMonths.filter(m => m.remaining === 0).length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 text-[9px] font-black uppercase tracking-wide">
+                    {advInfo.advanceMonths.filter(m => m.remaining === 0).length} month full clear
+                  </span>
+                )}
+              </p>
+              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                Ye balance age ke months ki fee mein khud adjust ho jayegi
+              </p>
+            </div>
+            <button
+              onClick={() => setShowAdvance(v => !v)}
+              className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer ${showAdvance ? 'bg-slate-100 text-slate-600 border border-slate-200 shadow-md shadow-slate-400/30' : 'bg-gradient-to-r from-amber-600 to-teal-600 text-white shadow-xl shadow-amber-600/40 hover:shadow-2xl hover:brightness-110 active:scale-95 active:shadow-sm'}`}
+            >
+              {showAdvance ? <EyeOff size={12} /> : <Eye size={12} />}
+              {showAdvance ? 'Hide' : 'Show Advance'}
+            </button>
+          </div>
+          {showAdvance && (
+            <div className="rounded-lg bg-white border border-amber-100 p-2 space-y-1.5">
+              <p className="text-[9px] font-black uppercase tracking-widest text-amber-600">Advance Kitne Months Mein Lagi</p>
+              {advInfo.advanceMonths.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {advInfo.advanceMonths.map(am => (
+                    <span key={`${am.month}-${am.year}`} className={`px-2 py-0.5 rounded-md border text-[9px] font-black flex items-center gap-1 ${am.remaining === 0 ? 'bg-teal-50 border-teal-200 text-teal-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>
+                      <CheckCircle2 size={10} /> {am.month} {am.year} - PKR {am.amount.toLocaleString()}
+                      {am.remaining === 0 ? ' CLEAR' : ` (${am.remaining.toLocaleString()} baki)`}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[10px] font-bold text-slate-500">Advance balance abhi kisi ek month ko full cover nahi kar raha - agli fee par khud lag jayega.</p>
+              )}
+              {advInfo.remainingAfter > 0 && (
+                <p className="text-[9px] font-black text-teal-700 flex items-center gap-1">
+                  <Wallet size={10} /> PKR {advInfo.remainingAfter.toLocaleString()} balance age months ke liye carry forward
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
         {monthStats.map((s) => {
           const { m, totalPaid, extraByType, pendingByType, extraPending, totalRemaining, isClear } = s;
@@ -11220,12 +11335,12 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
             <div
               onClick={() => onSelectMonth?.(isSelected ? null : m)}
               title={`Click to ${isSelected ? 'hide' : 'view'} ${m} ${year} history`}
-              className={`p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition-all select-none active:scale-[0.98] ${isClear ? 'bg-amber-50/60 border-amber-100' : totalPaid > 0 ? 'bg-amber-50/60 border-amber-100' : 'bg-slate-50 border-slate-100'} ${isSelected ? 'ring-2 ring-teal-400 border-teal-300 shadow-md' : 'hover:border-slate-300'}`}
+              className={`p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition-all select-none active:scale-[0.98] ${isClear ? 'bg-emerald-50/60 border-emerald-200' : totalPaid > 0 ? 'bg-amber-50/60 border-amber-100' : 'bg-slate-50 border-slate-100'} ${isSelected ? 'ring-2 ring-teal-400 border-teal-300 shadow-md' : 'hover:border-slate-300'}`}
             >
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black text-slate-700 uppercase">{m}</span>
                 <span className="flex items-center gap-1">
-                  {isClear && <CheckCircle2 size={11} className="text-amber-600" />}
+                  {isClear && <CheckCircle2 size={11} className="text-emerald-500" />}
                   <ChevronDown size={11} className={`text-slate-300 transition-transform ${isSelected ? 'rotate-180 text-teal-400' : ''}`} />
                 </span>
               </div>
@@ -11234,7 +11349,10 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
                 {totalRemaining > 0 ? (
                   <span className="block">Remaining: <span className="text-rose-600 font-black">PKR {totalRemaining.toLocaleString()}</span></span>
                 ) : (
-                  <span className="block font-black text-amber-600">Clear</span>
+                  <span className="block font-black text-emerald-600">Clear ✓</span>
+                )}
+                {s.advance > 0 && (
+                  <span className="block font-black text-teal-600">Advance: PKR {s.advance.toLocaleString()}</span>
                 )}
                 {/* Dues — ASLI fee-type name ke saath (e.g. Paper Fund, Exam Fee) */}
                 {Array.from(pendingByType.entries()).map(([t, amt]) => (
@@ -11248,7 +11366,7 @@ function FeeMonthGrid({ feeStudent, student, feeRecords = [], year, selectedMont
               <div className="flex items-center gap-1.5 pt-1" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => onCollect(m, totalRemaining)}
-                  className="flex-1 py-1 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[9px] font-black uppercase tracking-wide rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
+                  className="flex-1 py-1 bg-amber-600 hover:bg-amber-700 active:scale-95 shadow-lg shadow-amber-600/40 hover:shadow-xl hover:brightness-105 text-white text-[9px] font-black uppercase tracking-wide rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer"
                   title={`Collect fee for ${m} ${year}`}
                 >
                   <Plus size={9} /> Collect

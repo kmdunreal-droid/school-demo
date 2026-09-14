@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { X, Search, CheckCircle2, CreditCard, Receipt, AlertCircle, ChevronLeft, ChevronDown, Wallet, ArrowRight, CalendarDays, BadgeCheck, Banknote } from 'lucide-react';
+import { X, Search, CheckCircle2, CreditCard, Receipt, AlertCircle, ChevronLeft, ChevronDown, Wallet, ArrowRight, CalendarDays, BadgeCheck, Banknote, Eye, EyeOff, TrendingUp } from 'lucide-react';
 import { StudentFeeData, Student } from '../types';
-import { MONTHS, getDueRemaining, getDuePaid } from '../lib/feeEngine';
+import { MONTHS, getDueRemaining, getDuePaid, getAdvanceSummary } from '../lib/feeEngine';
 
 // ===== Month parsing helpers (mirror of PrincipalDashboard's parseMonthKey) =====
 export const MONTH_ALIAS: Record<string, number> = {
@@ -50,6 +50,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('Cash');
   const [showPaidDues, setShowPaidDues] = useState(false);
+  const [showAdvance, setShowAdvance] = useState(false);
 
   // Open hote waqt reset + initial student select
   useEffect(() => {
@@ -61,6 +62,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
       setAmount('');
       setMethod('Cash');
       setShowPaidDues(false);
+      setShowAdvance(false);
       setYear(new Date().getFullYear());
     }
   }, [open, initialStudentId, feeStudents]);
@@ -89,7 +91,8 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
       });
       const duesPending = monthDues.reduce((s, d) => s + getDueRemaining(d), 0);
       const tuitionRemaining = Math.max(0, b - paid);
-      return { m, base: b, paid, tuitionRemaining, duesPending, monthDues };
+      const advance = Math.max(0, paid - b);
+      return { m, base: b, paid, tuitionRemaining, advance, duesPending, monthDues };
     });
   };
 
@@ -103,7 +106,8 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
         const r = computeRows(f, cy);
         const tuitionPending = r.reduce((s, x) => s + x.tuitionRemaining, 0);
         const duesPending = (f.dues || []).filter(d => d.status !== 'waived').reduce((s, d) => s + getDueRemaining(d), 0);
-        return { f, tuitionPending, duesPending, total: tuitionPending + duesPending };
+        const advance = getAdvanceSummary(f).advance;
+        return { f, tuitionPending, duesPending, total: tuitionPending + duesPending, advance };
       });
     rows.sort((x, y) => y.total - x.total || String(x.f.name || '').localeCompare(String(y.f.name || '')));
     return rows;
@@ -117,6 +121,10 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
   const duesPendingTotal = fs ? (fs.dues || []).filter(d => d.status !== 'waived').reduce((s, d) => s + getDueRemaining(d), 0) : 0;
   const paidTotal = fs ? (fs.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0;
   const grandPayable = tuitionPendingTotal + duesPendingTotal;
+
+  // Advance fee summary — zyada di gayi fee age months ke liye
+  const advInfo = fs ? getAdvanceSummary(fs, year) : null;
+  const fullAdvanceMonths = advInfo ? advInfo.advanceMonths.filter(m => m.remaining === 0).length : 0;
 
   const pendingDues = fs
     ? (fs.dues || [])
@@ -216,7 +224,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         <button
                           key={String(r.f.id)}
                           onClick={() => { setSelectedId(String(r.f.id)); setPanel(null); }}
-                          className="text-left p-3 rounded-xl border border-slate-200 hover:border-amber-400 hover:bg-amber-50/40 transition-all cursor-pointer"
+                          className="text-left p-3 rounded-xl border border-slate-200 shadow-sm shadow-slate-400/20 hover:shadow-md hover:shadow-amber-400/20 hover:border-amber-400 hover:bg-amber-50/40 transition-all cursor-pointer"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0">
@@ -235,7 +243,10 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                               <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[9px] font-black uppercase tracking-wide">Dues: {r.duesPending.toLocaleString()}</span>
                             )}
                             {r.tuitionPending === 0 && r.duesPending === 0 && (
-                              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[9px] font-black uppercase tracking-wide">All Clear</span>
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[9px] font-black uppercase tracking-wide">All Clear ✓</span>
+                            )}
+                            {r.advance > 0 && (
+                              <span className="px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 text-[9px] font-black uppercase tracking-wide">Advance: PKR {r.advance.toLocaleString()}</span>
                             )}
                           </div>
                         </button>
@@ -268,6 +279,65 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                       <span className="block text-sm font-black text-slate-900">PKR {grandPayable.toLocaleString()}</span>
                     </div>
                   </div>
+
+{/* ===== ADVANCE FEE - zyada di gayi fee age months ke liye ===== */}
+                  {advInfo && (advInfo.advance > 0 || advInfo.advanceMonths.length > 0) && (
+                    <div className="rounded-2xl border border-amber-300 bg-gradient-to-r from-amber-50 via-white to-teal-50 p-4">
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-amber-600 flex items-center gap-1.5">
+                            <TrendingUp size={12} /> Advance Fee - Zyada Di Gayi Fee Aagay Months Mein
+                          </p>
+                          <div className="flex items-center gap-2.5 flex-wrap mt-1">
+                            <span className="text-lg font-black text-amber-700">PKR {advInfo.advance.toLocaleString()}</span>
+                            {fullAdvanceMonths > 0 && (
+                              <span className="px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 text-[9px] font-black uppercase tracking-wide">{fullAdvanceMonths} month full clear ✓</span>
+                            )}
+                          </div>
+                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                            Ye balance age ke months ki school fee mein khud adjust ho jayegi - dobara paisa nahi lagega.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setShowAdvance(v => !v)}
+                          className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer shrink-0 ${showAdvance ? 'bg-slate-100 text-slate-600 border border-slate-200 shadow-md shadow-slate-400/30' : 'bg-gradient-to-r from-amber-600 to-teal-600 text-white shadow-xl shadow-amber-600/40 hover:shadow-2xl hover:brightness-110 active:scale-95 active:shadow-sm'}`}
+                        >
+                          {showAdvance ? <EyeOff size={14} /> : <Eye size={14} />}
+                          {showAdvance ? 'Hide Advance' : 'Show Advance'}
+                        </button>
+                      </div>
+                      {showAdvance && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="mt-3 rounded-xl bg-white border border-amber-200 p-3 space-y-2"
+                        >
+                          <p className="text-[9px] font-black uppercase tracking-widest text-amber-600 flex items-center gap-1.5">
+                            <Wallet size={11} /> Advance Kitne Months Mein Lagi
+                          </p>
+                          {advInfo.advanceMonths.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {advInfo.advanceMonths.map(am => (
+                                <span key={`${am.month}-${am.year}`} className={`px-2.5 py-1 rounded-lg border text-[10px] font-black flex items-center gap-1 ${am.remaining === 0 ? 'bg-teal-50 border-teal-200 text-teal-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>
+                                  <CheckCircle2 size={11} /> {am.month} {am.year} - PKR {am.amount.toLocaleString()}
+                                  {am.remaining === 0 ? <span className="font-black">CLEAR</span> : <span className="opacity-80">({am.remaining.toLocaleString()} baki)</span>}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] font-bold text-slate-500">
+                              Advance balance abhi kisi ek month ko full cover nahi kar raha - agli fee par khud lag jayega.
+                            </p>
+                          )}
+                          {advInfo.remainingAfter > 0 && (
+                            <p className="text-[9px] font-black text-teal-700 flex items-center gap-1">
+                              <Wallet size={10} /> PKR {advInfo.remainingAfter.toLocaleString()} balance {advInfo.currentYear} ke baad wale months ke liye carry forward
+                            </p>
+                          )}
+                        </motion.div>
+                      )}
+                    </div>
+                  )}
 
                   {/* ===== SECTION 1 - DUES AND OTHER FUNDS (Paper Fund etc.) ===== */}
                   <div>
@@ -302,7 +372,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                                 </div>
                                 <button
                                   onClick={() => openDuePanel(d)}
-                                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:scale-95 shadow-lg shadow-amber-600/40 hover:shadow-xl hover:brightness-105 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
                                 >
                                   <Banknote size={13} /> Pay Now
                                 </button>
@@ -319,9 +389,9 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         })}
                       </div>
                     ) : (
-                      <div className="p-4 rounded-xl border border-amber-100 bg-amber-50/50 flex items-center gap-2">
-                        <BadgeCheck size={16} className="text-amber-600" />
-                        <span className="text-xs font-black text-amber-700 uppercase tracking-wide">Koi pending due nahi - sab clear</span>
+                      <div className="p-4 rounded-xl border border-emerald-100 bg-emerald-50/50 flex items-center gap-2">
+                        <BadgeCheck size={16} className="text-emerald-600" />
+                        <span className="text-xs font-black text-emerald-700 uppercase tracking-wide">Koi pending due nahi - sab clear ✓</span>
                       </div>
                     )}
                     {showPaidDues && paidDues.length > 0 && (
@@ -348,7 +418,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                         </h4>
                       </div>
                       {tuitionPendingTotal > 0 && (
-                        <button onClick={openAllPanel} className="px-3 py-1.5 bg-slate-900 hover:bg-slate-700 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1.5 cursor-pointer">
+                        <button onClick={openAllPanel} className="px-3 py-1.5 bg-slate-900 hover:bg-slate-700 shadow-xl shadow-slate-900/40 hover:shadow-2xl hover:brightness-110 active:scale-95 active:shadow-sm text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1.5 cursor-pointer">
                           <Wallet size={11} /> Pay All Remaining (Auto-Spread)
                         </button>
                       )}
@@ -364,15 +434,16 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                                 <span>Base: PKR {r.base.toLocaleString()} - Paid: <span className="text-amber-600 font-black">PKR {r.paid.toLocaleString()}</span></span>
                                 {r.tuitionRemaining > 0 && <span className="block">Remaining: <span className="text-rose-600 font-black">PKR {r.tuitionRemaining.toLocaleString()}</span></span>}
                                 {r.duesPending > 0 && <span className="block">Dues (Pending): <span className="text-amber-600 font-black">PKR {r.duesPending.toLocaleString()}</span></span>}
+                                {r.advance > 0 && <span className="block font-black text-teal-600">Advance: PKR {r.advance.toLocaleString()}</span>}
                               </div>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
                               {r.tuitionRemaining === 0 && r.duesPending === 0 ? (
-                                <span className="px-2 py-1 rounded-lg bg-amber-100 text-amber-700 text-[9px] font-black uppercase tracking-widest flex items-center gap-1"><CheckCircle2 size={10} /> Clear</span>
+                                <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm shadow-emerald-500/30 text-[9px] font-black uppercase tracking-widest flex items-center gap-1"><CheckCircle2 size={10} /> Clear ✓</span>
                               ) : (
                                 <button
                                   onClick={() => openMonthPanel(r.m, r.tuitionRemaining)}
-                                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 active:scale-95 shadow-lg shadow-amber-600/40 hover:shadow-xl hover:brightness-105 text-white text-[9px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-1 cursor-pointer"
                                 >
                                   <Banknote size={11} /> {r.tuitionRemaining > 0 ? 'Pay' : 'Advance'}
                                 </button>
@@ -427,7 +498,7 @@ export function FeePaymentCenter({ open, onClose, feeStudents, students, initial
                   {/* Back to list */}
                   <button
                     onClick={() => { setSelectedId(''); setPanel(null); setSearch(''); }}
-                    className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-black text-[10px] uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 shadow-sm hover:shadow-md shadow-slate-400/30 text-slate-600 font-black text-[10px] uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <ChevronLeft size={14} /> Doosre Student Ki Fee Pay Karein
                   </button>
@@ -471,17 +542,17 @@ function PayPanel({ amount, setAmount, method, setMethod, remaining, onConfirm, 
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Amount (PKR)"
-          className="flex-1 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-black text-slate-900 focus:outline-none focus:border-amber-500"
+          className="flex-1 px-4 py-2.5 bg-white border-2 border-amber-300 rounded-xl text-sm font-black text-slate-900 shadow-inner focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-300/40"
           autoFocus
         />
         <select
           value={method}
           onChange={(e) => setMethod(e.target.value)}
-          className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-700 focus:outline-none focus:border-amber-500 appearance-none cursor-pointer"
+          className="px-4 py-2.5 bg-white border-2 border-amber-300 rounded-xl text-xs font-black text-slate-700 shadow-inner focus:outline-none focus:border-amber-500 appearance-none cursor-pointer"
         >
           {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <button onClick={onConfirm} className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer">
+        <button onClick={onConfirm} className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 active:scale-95 shadow-xl shadow-amber-600/40 hover:shadow-2xl hover:brightness-110 active:shadow-sm text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer">
           <CheckCircle2 size={14} /> Confirm Payment
         </button>
         <button onClick={onCancel} className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-600 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer">
