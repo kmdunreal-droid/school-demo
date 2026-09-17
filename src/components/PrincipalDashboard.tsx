@@ -8914,7 +8914,12 @@ const [extraFees, setExtraFees] = useState<Record<string, string>>({
       </AnimatePresence>
 
       {/* ========== MOBILE RESPONSIVE BOTTOM FOOTER NAVIGATION ========== */}
-      <div id="principal-mobile-footer-nav" className="md:hidden fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 text-white z-50 shadow-2xl px-1 pb-safe select-none print:hidden">
+      <div
+        id="principal-mobile-footer-nav"
+        className={`md:hidden fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 text-white z-50 shadow-2xl px-1 pb-safe select-none print:hidden transition-transform duration-300 ease-out ${
+          sidebarOpen ? 'translate-y-full pointer-events-none' : 'translate-y-0'
+        }`}
+      >
         <div className="flex justify-around items-center h-16">
           {[
             { id: 'dashboard', label: 'Home', icon: BarChart2, color: 'emerald' },
